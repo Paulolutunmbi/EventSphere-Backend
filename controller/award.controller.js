@@ -1,5 +1,7 @@
 import Award from '../model/award.model.js'
 import Event from '../model/event.model.js'
+import Contestant from '../model/contestant.model.js'
+import Vote from '../model/vote.model.js'
 import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
 import { sendEmail } from '../services/emailService.js'
 import { voteConfirmationTemplate } from '../services/emailTemplates.js'
@@ -48,6 +50,52 @@ function normalizeNominees(input) {
     ? input
     : String(input || '').split(/\n|,/).map(v => v.trim())
   return [...new Set(nominees.map(v => String(v || '').trim()).filter(Boolean))].slice(0, 6)
+}
+
+function slugify(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+async function syncContestantsForAward(award, eventId) {
+  const nominees = Array.isArray(award.nominees) ? award.nominees : []
+  const contestants = []
+
+  for (const nominee of nominees) {
+    const name = String(nominee || '').trim()
+    if (!name) continue
+
+    const slug = slugify(name)
+    const contestant = await Contestant.findOneAndUpdate(
+      { eventId, awardId: award._id, slug },
+      {
+        eventId,
+        awardId: award._id,
+        name,
+        slug,
+        isActive: true,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    )
+
+    contestants.push(contestant)
+  }
+
+  return contestants
+}
+
+async function resolveContestant({ eventId, awardId, nominee, contestantId }) {
+  if (contestantId) {
+    const contestant = await Contestant.findOne({ _id: contestantId, eventId, awardId, isActive: true })
+    if (contestant) return contestant
+  }
+
+  const targetSlug = slugify(nominee)
+  if (!targetSlug) return null
+
+  return Contestant.findOne({ eventId, awardId, slug: targetSlug, isActive: true })
 }
 
 function getNomineeVoteCount(award, nominee) {
@@ -129,10 +177,10 @@ export async function initializeVotePayment(req, res) {
     if (!award)  return sendError(res, 404, 'Award not found')
 
     const event = await Event.findById(eventId)
+    await syncContestantsForAward(award, eventId)
 
-    const nominees      = Array.isArray(award.nominees) ? award.nominees : []
-    const selectedNominee = nominees.find(n => n.toLowerCase() === nominee.toLowerCase())
-    if (!selectedNominee) {
+    const selectedContestant = await resolveContestant({ eventId, awardId, nominee })
+    if (!selectedContestant) {
       return sendError(res, 400, 'Please select a valid nominee')
     }
 
@@ -142,7 +190,9 @@ export async function initializeVotePayment(req, res) {
     const metadata = {
       platform: 'eventsphere',
       payment_type: 'vote',
-      nominee,
+      nominee: selectedContestant.name,
+      contestant_id: String(selectedContestant._id),
+      contestant_slug: selectedContestant.slug,
       quantity,
       vote_unit_amount: VOTE_UNIT_AMOUNT,
       award_id: String(award._id),
@@ -155,7 +205,7 @@ export async function initializeVotePayment(req, res) {
         { display_name: 'Platform', variable_name: 'platform', value: 'EventSphere' },
         { display_name: 'Payment Type', variable_name: 'payment_type', value: 'Vote' },
         { display_name: 'Award', variable_name: 'award_title', value: award.title },
-        { display_name: 'Voting For', variable_name: 'nominee', value: selectedNominee },
+        { display_name: 'Voting For', variable_name: 'nominee', value: selectedContestant.name },
         { display_name: 'Votes', variable_name: 'quantity', value: String(quantity) },
         { display_name: 'Voter', variable_name: 'voter_name', value: name || email },
       ],
@@ -189,10 +239,35 @@ export async function listAwards(req, res) {
   try {
     const { eventId } = req.params
     const awards = await Award.find({ eventId }).sort({ createdAt: -1 })
+    await Promise.all(awards.map(award => syncContestantsForAward(award, eventId)))
     return sendSuccess(res, 'Awards loaded', { awards: awards.map(toPublicAward) })
   } catch (error) {
     console.error('List awards error:', error)
     return sendError(res, 500, 'Failed to load awards')
+  }
+}
+
+export async function listContestants(req, res) {
+  try {
+    const { eventId, awardId } = req.params
+    const award = await Award.findOne({ _id: awardId, eventId })
+    if (!award) return sendError(res, 404, 'Award not found')
+
+    await syncContestantsForAward(award, eventId)
+
+    const contestants = await Contestant.find({ eventId, awardId, isActive: true }).sort({ createdAt: 1 })
+    return sendSuccess(res, 'Contestants loaded', {
+      contestants: contestants.map(contestant => ({
+        id: contestant._id,
+        name: contestant.name,
+        slug: contestant.slug,
+        voteCount: contestant.voteCount,
+        voterCount: contestant.voterCount,
+      })),
+    })
+  } catch (error) {
+    console.error('List contestants error:', error)
+    return sendError(res, 500, 'Failed to load contestants')
   }
 }
 
@@ -213,6 +288,7 @@ export async function createAward(req, res) {
     if (!event) return sendError(res, 404, 'Event not found')
 
     const award = await Award.create({ eventId, title, description, nominees })
+    await syncContestantsForAward(award, eventId)
     return sendSuccess(res, 'Award created', { award: toAdminAward(award) }, 201)
   } catch (error) {
     if (error?.code === 11000) {
@@ -242,8 +318,16 @@ export async function voteAward(req, res) {
 
     const award = await Award.findOne({ _id: awardId, eventId })
     if (!award) return sendError(res, 404, 'Award not found')
+    await syncContestantsForAward(award, eventId)
 
     // idempotent — reference already recorded
+    const existingVote = await Vote.findOne({ paymentReference: reference, eventId, awardId })
+    if (existingVote) {
+      return sendSuccess(res, 'Vote payment already verified', {
+        award: toPublicAward(await Award.findById(award._id)),
+      })
+    }
+
     const alreadyRecorded =
       Array.isArray(award.votes) &&
       award.votes.some(
@@ -278,11 +362,14 @@ export async function voteAward(req, res) {
       metadata.nominee || req.body?.nominee || ''
     ).trim()
 
-    const nominees        = Array.isArray(award.nominees) ? award.nominees : []
-    const selectedNominee = nominees.find(
-      n => n.toLowerCase() === nomineeFromMeta.toLowerCase()
-    )
-    if (!selectedNominee) {
+    const contestant = await resolveContestant({
+      eventId,
+      awardId,
+      nominee: metadata.contestant_slug || nomineeFromMeta,
+      contestantId: metadata.contestant_id || req.body?.contestantId,
+    })
+
+    if (!contestant) {
       return sendError(res, 400, 'Please select a valid nominee')
     }
 
@@ -305,17 +392,34 @@ export async function voteAward(req, res) {
     award.votes.push({
       name,
       email,
-      nominee:          selectedNominee,
+      nominee:          contestant.name,
       quantity,
       amount:           paidAmount,
       paymentReference: reference,
     })
     await award.save()
 
+    const vote = await Vote.create({
+      eventId,
+      awardId,
+      contestantId: contestant._id,
+      voterName: name,
+      voterEmail: email,
+      quantity,
+      amountPaid: paidAmount,
+      paymentReference: reference,
+      paystackStatus: payload.data?.status || 'success',
+      paystackPayload: payload.data,
+    })
+
+    contestant.voteCount += quantity
+    contestant.voterCount += 1
+    await contestant.save()
+
     if (email) {
       const template = voteConfirmationTemplate({
         eventTitle: metadata.event_title || event?.title || 'your event',
-        nominee: selectedNominee,
+        nominee: contestant.name,
         quantity,
       })
       sendEmail({ to: email, subject: template.subject, text: template.text, html: template.html })
@@ -324,6 +428,14 @@ export async function voteAward(req, res) {
 
     return sendSuccess(res, 'Vote recorded', {
       award: toPublicAward(award),
+      voteId: vote._id,
+      contestant: {
+        id: contestant._id,
+        name: contestant.name,
+        slug: contestant.slug,
+        voteCount: contestant.voteCount,
+        voterCount: contestant.voterCount,
+      },
       quantity,
       amount: paidAmount,
     }, 201)

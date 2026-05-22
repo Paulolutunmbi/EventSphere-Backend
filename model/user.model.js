@@ -7,18 +7,18 @@ const userSchema = new mongoose.Schema(
       required: true,
       unique:   true,
       lowercase: true,
-      trim:     true,
-    },
-    name: {
+    passwordHash: {
       type:    String,
       default: '',
-      trim:    true,
     },
-    // Add more fields as your app grows:
-    // avatar: String,
-    // bio:    String,
-  },
-  {
+    isEmailVerified: {
+      type:    Boolean,
+      default: false,
+    },
+    verifiedAt: {
+      type:    Date,
+      default: null,
+    },
     timestamps: true, // adds createdAt + updatedAt automatically
   }
 )

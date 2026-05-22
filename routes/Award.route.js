@@ -4,6 +4,7 @@ import {
   listAwards,
   createAward,
   initializeVotePayment,
+  listContestants,
   voteAward,
 } from '../controller/award.controller.js'
 
@@ -11,6 +12,9 @@ const router = express.Router()
 
 // GET  /api/awards/events/:eventId          → list all awards for event
 router.get('/events/:eventId', listAwards)
+
+// GET  /api/awards/events/:eventId/:awardId/contestants
+router.get('/events/:eventId/:awardId/contestants', listContestants)
 
 // POST /api/awards/events/:eventId          → create award (organiser only)
 router.post('/events/:eventId', requireAuth, createAward)
