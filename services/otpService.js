@@ -43,14 +43,32 @@ export async function createAndSendOtp({ email, name = '', purpose = 'signup' })
 
   // Send email
   const template = otpEmailTemplate({ otp: code, expiresMinutes: OTP_EXPIRY_MINUTES })
-  await sendEmail({
-    to: normalizedEmail,
-    subject: template.subject,
-    text: template.text,
-    html: template.html,
-  })
+  let deliveryMode = 'email'
 
-  return { email: normalizedEmail, expiresAt, expiresIn: OTP_EXPIRY_MINUTES * 60 }
+  try {
+    await sendEmail({
+      to: normalizedEmail,
+      subject: template.subject,
+      text: template.text,
+      html: template.html,
+    })
+  } catch (error) {
+    if (process.env.NODE_ENV === 'production') {
+      throw error
+    }
+
+    deliveryMode = 'console'
+    console.warn('OTP email delivery failed, continuing in development mode:', error.message)
+    console.log(`OTP for ${normalizedEmail}: ${code}`)
+  }
+
+  return {
+    email: normalizedEmail,
+    expiresAt,
+    expiresIn: OTP_EXPIRY_MINUTES * 60,
+    deliveryMode,
+    debugCode: deliveryMode === 'console' ? code : undefined,
+  }
 }
 
 /**
