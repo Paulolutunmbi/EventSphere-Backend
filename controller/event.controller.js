@@ -1,12 +1,10 @@
-import nodemailer from 'nodemailer'
 import Event from '../model/event.model.js'
 import User from '../model/user.model.js'
 import Ticket from '../model/ticket.model.js'
 import Award from '../model/award.model.js'
-
-function sendError(res, status, message) {
-  return res.status(status).json({ message, success: false })
-}
+import { sendEmail } from '../services/emailService.js'
+import { invitationEmailTemplate } from '../services/emailTemplates.js'
+import { sendError, sendSuccess } from '../utils/response.js'
 
 function buildEventPayload(body = {}) {
   return {
@@ -82,18 +80,6 @@ async function getHostProfile(userId) {
   return User.findById(userId).select('name email')
 }
 
-function getTransporter() {
-  return nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: Number(process.env.EMAIL_PORT),
-    secure: false,
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  })
-}
-
 export async function createEvent(req, res) {
   try {
     const payload = buildEventPayload(req.body)
@@ -108,7 +94,7 @@ export async function createEvent(req, res) {
     })
     const host = await getHostProfile(req.user.userId)
 
-    return res.status(201).json({ message: 'Event created successfully', event: toClientEventWithHost(event, host) })
+    return sendSuccess(res, 'Event created successfully', { event: toClientEventWithHost(event, host) }, 201)
   } catch (error) {
     console.error('Create event error:', error)
     return sendError(res, 500, 'Failed to create event')
@@ -119,7 +105,7 @@ export async function listEvents(req, res) {
   try {
     const host = await getHostProfile(req.user.userId)
     const events = await Event.find({ organizerId: req.user.userId }).sort({ createdAt: -1 })
-    return res.json({ events: events.map(event => toClientEventWithHost(event, host)) })
+    return sendSuccess(res, 'Events loaded', { events: events.map(event => toClientEventWithHost(event, host)) })
   } catch (error) {
     console.error('List events error:', error)
     return sendError(res, 500, 'Failed to load events')
@@ -136,7 +122,7 @@ export async function getEvent(req, res) {
     }
 
     const host = await getHostProfile(req.user.userId)
-    return res.json({ event: toClientEventWithHost(event, host) })
+    return sendSuccess(res, 'Event loaded', { event: toClientEventWithHost(event, host) })
   } catch (error) {
     console.error('Get event error:', error)
     return sendError(res, 500, 'Failed to load event')
@@ -159,10 +145,7 @@ export async function updateEventVisibility(req, res) {
     }
 
     const host = await getHostProfile(req.user.userId)
-    return res.json({
-      message: 'Event visibility updated',
-      event: toClientEventWithHost(event, host),
-    })
+    return sendSuccess(res, 'Event visibility updated', { event: toClientEventWithHost(event, host) })
   } catch (error) {
     console.error('Update visibility error:', error)
     return sendError(res, 500, 'Failed to update visibility')
@@ -197,7 +180,7 @@ export async function updateEvent(req, res) {
     }
 
     const host = await getHostProfile(req.user.userId)
-    return res.json({ message: 'Event updated', event: toClientEventWithHost(event, host) })
+    return sendSuccess(res, 'Event updated', { event: toClientEventWithHost(event, host) })
   } catch (error) {
     console.error('Update event error:', error)
     return sendError(res, 500, 'Failed to update event')
@@ -226,22 +209,20 @@ export async function sendInvitations(req, res) {
     }
 
     const host = await getHostProfile(req.user.userId)
-    const transporter = getTransporter()
     const invitationLink = `${process.env.PUBLIC_APP_URL || 'http://localhost:5174'}/public/events/${event._id}`
 
     for (const email of normalized) {
-      await transporter.sendMail({
-        from: `"EventSphere" <${process.env.EMAIL_USER}>`,
+      const template = invitationEmailTemplate({
+        eventTitle: event.title,
+        hostName: host?.name || '',
+        hostEmail: host?.email || '',
+        invitationLink,
+      })
+      await sendEmail({
         to: email,
-        subject: `You're invited to ${event.title}`,
-        text: `${host?.name || 'The host'} invited you to ${event.title}. View it here: ${invitationLink}`,
-        html: `
-          <div style="font-family:Arial,sans-serif;background:#111118;color:#f0f0f5;padding:24px;border-radius:16px">
-            <h2 style="margin-top:0">You’re invited to ${event.title}</h2>
-            <p>${host?.name || 'The host'} (${host?.email || ''}) invited you to this event.</p>
-            <p><a href="${invitationLink}" style="color:#a78bfa">Open the event page</a></p>
-          </div>
-        `,
+        subject: template.subject,
+        text: template.text,
+        html: template.html,
       })
     }
 
@@ -249,10 +230,7 @@ export async function sendInvitations(req, res) {
     event.invitedGuests.push(...invitedGuests)
     await event.save()
 
-    return res.json({
-      message: 'Invitations sent',
-      event: toClientEventWithHost(event, host),
-    })
+    return sendSuccess(res, 'Invitations sent', { event: toClientEventWithHost(event, host) })
   } catch (error) {
     console.error('Send invitations error:', error)
     return sendError(res, 500, 'Failed to send invitations')
@@ -269,7 +247,7 @@ export async function getPublicEvent(req, res) {
     }
 
     const host = await getHostProfile(event.organizerId)
-    return res.json({ event: toClientEventWithHost(event, host) })
+    return sendSuccess(res, 'Event loaded', { event: toClientEventWithHost(event, host) })
   } catch (error) {
     console.error('Get public event error:', error)
     return sendError(res, 500, 'Failed to load event')
@@ -301,10 +279,7 @@ export async function submitRsvp(req, res) {
     await event.save()
 
     const host = await getHostProfile(event.organizerId)
-    return res.status(201).json({
-      message: 'RSVP confirmed',
-      event: toClientEventWithHost(event, host),
-    })
+    return sendSuccess(res, 'RSVP confirmed', { event: toClientEventWithHost(event, host) }, 201)
   } catch (error) {
     console.error('Submit RSVP error:', error)
     return sendError(res, 500, 'Failed to submit RSVP')
@@ -329,7 +304,7 @@ export async function getEventAdminStats(req, res) {
     const scannedTickets = tickets.filter(ticket => ticket.status === 'checked-in')
     const unscannedTickets = tickets.filter(ticket => ticket.status === 'confirmed')
 
-    return res.json({
+    return sendSuccess(res, 'Admin stats loaded', {
       event: toClientEventWithHost(event, await getHostProfile(event.organizerId)),
       tickets: tickets.map(ticket => ({
         id: ticket._id,
@@ -436,7 +411,7 @@ export async function addHost(req, res) {
     await event.save()
 
     const host = await getHostProfile(req.user.userId)
-    return res.json({ message: 'Host added', event: toClientEventWithHost(event, host) })
+    return sendSuccess(res, 'Host added', { event: toClientEventWithHost(event, host) })
   } catch (error) {
     console.error('Add host error:', error)
     return sendError(res, 500, 'Failed to add host')

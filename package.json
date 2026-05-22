@@ -18,7 +18,7 @@
     "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.6.2",
-    "nodemailer": "^8.0.7",
+    "resend": "^4.0.0",
     "paystack": "^2.0.1",
     "qrcode": "^1.5.4",
     "stripe": "^22.1.1",

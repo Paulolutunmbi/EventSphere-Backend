@@ -1,12 +1,11 @@
 import Award from '../model/award.model.js'
 import Event from '../model/event.model.js'
+import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
+import { sendEmail } from '../services/emailService.js'
+import { voteConfirmationTemplate } from '../services/emailTemplates.js'
+import { sendError, sendSuccess } from '../utils/response.js'
 
-const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY
 const VOTE_UNIT_AMOUNT  = 5000   // kobo = ₦50 per vote
-
-function sendError(res, status, message) {
-  return res.status(status).json({ message, success: false })
-}
 
 /* ══════════════════════════════════════
    HELPERS  (unchanged from your version)
@@ -117,10 +116,6 @@ function toAdminAward(award) {
 ══════════════════════════════════════════════════════════ */
 export async function initializeVotePayment(req, res) {
   try {
-    if (!paystackSecretKey) {
-      return sendError(res, 500, 'Paystack secret key is missing')
-    }
-
     const { eventId, awardId } = req.params
     const email    = String(req.body?.email    || '').trim().toLowerCase()
     const nominee  = String(req.body?.nominee  || '').trim()
@@ -144,92 +139,41 @@ export async function initializeVotePayment(req, res) {
     const totalKobo = quantity * VOTE_UNIT_AMOUNT
     const appUrl    = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
 
-    const body = {
+    const metadata = {
+      platform: 'eventsphere',
+      payment_type: 'vote',
+      nominee,
+      quantity,
+      vote_unit_amount: VOTE_UNIT_AMOUNT,
+      award_id: String(award._id),
+      award_title: award.title,
+      event_id: String(eventId),
+      event_title: event?.title || '',
+      name,
       email,
-      amount:   totalKobo,
+      custom_fields: [
+        { display_name: 'Platform', variable_name: 'platform', value: 'EventSphere' },
+        { display_name: 'Payment Type', variable_name: 'payment_type', value: 'Vote' },
+        { display_name: 'Award', variable_name: 'award_title', value: award.title },
+        { display_name: 'Voting For', variable_name: 'nominee', value: selectedNominee },
+        { display_name: 'Votes', variable_name: 'quantity', value: String(quantity) },
+        { display_name: 'Voter', variable_name: 'voter_name', value: name || email },
+      ],
+    }
+
+    const { authorizationUrl, reference } = await initializePaystackPayment({
+      email,
+      amount: totalKobo,
       currency: 'NGN',
       channels: ['card', 'bank_transfer', 'ussd', 'bank'],
-      // Paystack redirects here — the frontend reads ?reference= and calls voteAward
-      callback_url: `${appUrl}/events/${eventId}/vote?awardId=${awardId}&reference={PAYSTACK_REFERENCE}`,
-
-      metadata: {
-        // ── platform tag ──────────────────────────────────────────────
-        // Same key you use on tickets — tells this apart from Streambox
-        // and from ticket payments when you browse the Paystack dashboard
-        platform: 'eventsphere',
-        payment_type: 'vote',          // distinguishes votes from ticket purchases
-
-        // ── vote details ──────────────────────────────────────────────
-        nominee,
-        quantity,
-        vote_unit_amount: VOTE_UNIT_AMOUNT,
-
-        // ── award + event ─────────────────────────────────────────────
-        award_id:    String(award._id),
-        award_title: award.title,
-        event_id:    String(eventId),
-        event_title: event?.title || '',
-
-        // ── voter ─────────────────────────────────────────────────────
-        name,
-        email,
-
-        // ── custom_fields ─────────────────────────────────────────────
-        // Labelled rows inside each Paystack transaction detail page
-        custom_fields: [
-          {
-            display_name:  'Platform',
-            variable_name: 'platform',
-            value:         'EventSphere',
-          },
-          {
-            display_name:  'Payment Type',
-            variable_name: 'payment_type',
-            value:         'Vote',           // vs "Ticket" — easy to filter in dashboard
-          },
-          {
-            display_name:  'Award',
-            variable_name: 'award_title',
-            value:         award.title,
-          },
-          {
-            display_name:  'Voting For',
-            variable_name: 'nominee',
-            value:         selectedNominee,
-          },
-          {
-            display_name:  'Votes',
-            variable_name: 'quantity',
-            value:         String(quantity),
-          },
-          {
-            display_name:  'Voter',
-            variable_name: 'voter_name',
-            value:         name || email,
-          },
-        ],
-      },
-    }
-
-    const response = await fetch('https://api.paystack.co/transaction/initialize', {
-      method:  'POST',
-      headers: {
-        Authorization:  `Bearer ${paystackSecretKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
+      callbackUrl: `${appUrl}/events/${eventId}/vote?awardId=${awardId}&reference={PAYSTACK_REFERENCE}`,
+      metadata,
     })
 
-    const payload = await response.json()
-    if (!response.ok || !payload.status) {
-      return sendError(res, 400, payload?.message || 'Failed to initialize payment')
-    }
-
-    return res.json({
-      message:   'Payment initialized',
-      authUrl:   payload.data.authorization_url,  // frontend: open Paystack popup / redirect
-      reference: payload.data.reference,
-      amount:    totalKobo,
+    return sendSuccess(res, 'Payment initialized', {
+      authUrl: authorizationUrl,
+      reference,
+      amount: totalKobo,
       quantity,
     })
   } catch (error) {
@@ -245,7 +189,7 @@ export async function listAwards(req, res) {
   try {
     const { eventId } = req.params
     const awards = await Award.find({ eventId }).sort({ createdAt: -1 })
-    return res.json({ awards: awards.map(toPublicAward) })
+    return sendSuccess(res, 'Awards loaded', { awards: awards.map(toPublicAward) })
   } catch (error) {
     console.error('List awards error:', error)
     return sendError(res, 500, 'Failed to load awards')
@@ -269,7 +213,7 @@ export async function createAward(req, res) {
     if (!event) return sendError(res, 404, 'Event not found')
 
     const award = await Award.create({ eventId, title, description, nominees })
-    return res.status(201).json({ message: 'Award created', award: toAdminAward(award) })
+    return sendSuccess(res, 'Award created', { award: toAdminAward(award) }, 201)
   } catch (error) {
     if (error?.code === 11000) {
       return sendError(res, 409, 'That award already exists for this event')
@@ -289,10 +233,6 @@ export async function createAward(req, res) {
 ══════════════════════════════════════════════════════════ */
 export async function voteAward(req, res) {
   try {
-    if (!paystackSecretKey) {
-      return sendError(res, 500, 'Paystack secret key is missing')
-    }
-
     const { eventId, awardId } = req.params
     const reference = String(req.body?.reference || '').trim()
 
@@ -310,22 +250,11 @@ export async function voteAward(req, res) {
         vote => String(vote.paymentReference || '').toLowerCase() === reference.toLowerCase()
       )
     if (alreadyRecorded) {
-      return res.status(200).json({
-        message: 'Vote payment already verified',
-        award:   toPublicAward(award),
-      })
+      return sendSuccess(res, 'Vote payment already verified', { award: toPublicAward(award) })
     }
 
     // verify with Paystack
-    const response = await fetch(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-      { headers: { Authorization: `Bearer ${paystackSecretKey}` } }
-    )
-    const payload = await response.json()
-
-    if (!response.ok || !payload.status) {
-      return sendError(res, 400, payload?.message || 'Payment verification failed')
-    }
+    const payload = await verifyPaystackTransaction(reference)
     if (payload.data?.status !== 'success') {
       return sendError(res, 400, 'Payment not completed yet')
     }
@@ -333,6 +262,8 @@ export async function voteAward(req, res) {
     // ── read values from metadata (set during initialize) ──
     // Fall back to req.body only if metadata is missing (e.g. old requests)
     const metadata = payload.data?.metadata || {}
+
+    const event = await Event.findById(eventId).select('title')
 
     const email = String(
       metadata.email || req.body?.email || payload.data?.customer?.email || ''
@@ -381,12 +312,21 @@ export async function voteAward(req, res) {
     })
     await award.save()
 
-    return res.status(201).json({
-      message:  'Vote recorded',
-      award:    toPublicAward(award),
+    if (email) {
+      const template = voteConfirmationTemplate({
+        eventTitle: metadata.event_title || event?.title || 'your event',
+        nominee: selectedNominee,
+        quantity,
+      })
+      sendEmail({ to: email, subject: template.subject, text: template.text, html: template.html })
+        .catch(err => console.error('Vote email error:', err))
+    }
+
+    return sendSuccess(res, 'Vote recorded', {
+      award: toPublicAward(award),
       quantity,
-      amount:   paidAmount,
-    })
+      amount: paidAmount,
+    }, 201)
   } catch (error) {
     console.error('Vote award error:', error)
     return sendError(res, 500, 'Failed to submit vote')

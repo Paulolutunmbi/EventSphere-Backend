@@ -31,7 +31,7 @@ app.use(
 app.use(express.json({ limit: '10mb' }))
 
 // health check — hit this first in Thunder Client to confirm server is up
-app.get('/', (req, res) => res.json({ message: 'EventSphere API is running ✅' }))
+app.get('/', (req, res) => res.json({ success: true, message: 'EventSphere API is running ✅', data: null }))
 
 // routes
 app.use('/api/auth', authRoutes)
@@ -41,7 +41,7 @@ app.use('/api/awards', awardRoutes)
 
 // fallback — shows all registered routes if a path isn't found
 app.use((req, res) => {
-  res.status(404).json({ message: `Cannot ${req.method} ${req.path}`, success: false })
+  res.status(404).json({ success: false, message: `Cannot ${req.method} ${req.path}`, data: null })
 })
 
 // use PORT from .env, or 3333 as fallback if PORT is missing

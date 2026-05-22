@@ -1,22 +1,10 @@
 import QRCode from 'qrcode'
-import nodemailer from 'nodemailer'
 import Ticket from '../model/ticket.model.js'
 import Event from '../model/event.model.js'
-
-const paystackSecretKey = process.env.PAYSTACK_SECRET_KEY
-
-function sendError(res, status, message) {
-  return res.status(status).json({ message, success: false })
-}
-
-function getTransporter() {
-  return nodemailer.createTransport({
-    host:   process.env.EMAIL_HOST,
-    port:   Number(process.env.EMAIL_PORT),
-    secure: false,
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-  })
-}
+import { sendEmail } from '../services/emailService.js'
+import { ticketEmailTemplate } from '../services/emailTemplates.js'
+import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
+import { sendError, sendSuccess } from '../utils/response.js'
 
 /* ── send ticket email with QR ── */
 async function sendTicketEmail(ticket, event) {
@@ -25,41 +13,13 @@ async function sendTicketEmail(ticket, event) {
     width: 400, margin: 2,
     color: { dark: '#0a0a0a', light: '#ffffff' },
   })
-  const qrBase64 = qrDataUrl.replace(/^data:image\/png;base64,/, '')
 
-  const transporter = getTransporter()
-  await transporter.sendMail({
-    from:    `"EventSphere" <${process.env.EMAIL_USER}>`,
-    to:      ticket.attendeeEmail,
-    subject: `Your ticket for ${event.title} ✦`,
-    html: `
-      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;
-                  background:#14141a;color:#e8e8ec;border-radius:16px;overflow:hidden;">
-        <div style="background:#1c1c24;padding:28px 32px;border-bottom:1px solid rgba(255,255,255,0.07)">
-          <p style="margin:0 0 4px;font-size:22px;color:#a78bfa">✦</p>
-          <h1 style="margin:0;font-size:22px;font-weight:800">${event.title}</h1>
-          <p style="margin:6px 0 0;color:#6b6b76;font-size:14px">
-            ${event.startDate} · ${event.startTime}${event.location ? ' · ' + event.location : ''}
-          </p>
-        </div>
-        <div style="padding:28px 32px;text-align:center">
-          <p style="margin:0 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b6b76">Your ticket</p>
-          <p style="margin:0 0 24px;font-size:16px;font-weight:700;color:#f0f0f4">${ticket.attendeeName}</p>
-          <img src="cid:qrcode" alt="QR code" style="width:200px;height:200px;border-radius:12px;border:4px solid #2a2a32" />
-          <p style="margin:16px 0 0;font-size:11px;color:#3d3d4a;font-family:monospace;letter-spacing:.1em">${ticket.ticketId}</p>
-          <p style="margin:10px 0 0;font-size:12px;color:#6b6b76">
-            Open your ticket: <a href="${ticketUrl}" style="color:#a78bfa;text-decoration:none">${ticketUrl}</a>
-          </p>
-        </div>
-        <div style="padding:20px 32px;border-top:1px solid rgba(255,255,255,0.07);text-align:center;color:#3d3d4a;font-size:12px">
-          Show this QR code at the entrance. One-time use only.
-        </div>
-      </div>
-    `,
-    attachments: [{
-      filename: 'ticket-qr.png', content: qrBase64,
-      encoding: 'base64', cid: 'qrcode', contentType: 'image/png',
-    }],
+  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl })
+  await sendEmail({
+    to: ticket.attendeeEmail,
+    subject: template.subject,
+    html: template.html,
+    text: template.text,
   })
 }
 
@@ -67,94 +27,47 @@ async function sendTicketEmail(ticket, event) {
    Paystack initialization — single place so both
    new tickets and retries share the same metadata
 ───────────────────────────────────────────────── */
-async function initializePaystackPayment({ email, name, ticket, event, ticketType }) {
+async function initializeTicketPayment({ email, name, ticket, event, ticketType }) {
   const priceInKobo = parsePriceToKobo(event.ticketPrice)
   const feeInKobo = calculateTicketFee(priceInKobo)
   const totalAmountInKobo = priceInKobo + feeInKobo
   const appUrl      = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
 
-  const body = {
-    email,
-    amount:       totalAmountInKobo,
-    currency:     'NGN',
-    // Paystack redirects here after payment — we read ?reference= to verify
-    callback_url: `${appUrl}/tickets/${ticket.ticketId}?reference={PAYSTACK_REFERENCE}`,
-
-    metadata: {
-      // ─── platform tag ───────────────────────────────────────────────────
-      // This is what tells you "this money is EventSphere, not Streambox"
-      // when you look at a transaction in your Paystack dashboard.
-      platform: 'eventsphere',
-
-      // ─── ticket ─────────────────────────────────────────────────────────
-      ticket_id:   ticket.ticketId,
-      ticket_type: ticketType,
-
-      // ─── event ──────────────────────────────────────────────────────────
-      event_id:       String(event._id),
-      event_title:    event.title,
-      event_date:     event.startDate,
-      event_time:     event.startTime,
-      event_location: event.location || '',
-
-      // ─── organiser ──────────────────────────────────────────────────────
-      // Lets you trace which organiser earned what when you add payouts
-      organiser_id: String(event.organizerId),
-
-      // ─── amount breakdown ──────────────────────────────────────────────
-      base_amount: String(priceInKobo),
-      fee_amount: String(feeInKobo),
-      total_amount: String(totalAmountInKobo),
-
-      // ─── attendee ───────────────────────────────────────────────────────
-      attendee_name:  name,
-      attendee_email: email,
-
-      // ─── custom_fields ──────────────────────────────────────────────────
-      // These show as labelled rows inside each transaction in the
-      // Paystack dashboard — makes manual review very easy
-      custom_fields: [
-        {
-          display_name:  'Platform',
-          variable_name: 'platform',
-          value:         'EventSphere',   // vs "Streambox"
-        },
-        {
-          display_name:  'Event',
-          variable_name: 'event_title',
-          value:         event.title,
-        },
-        {
-          display_name:  'Ticket ID',
-          variable_name: 'ticket_id',
-          value:         ticket.ticketId,
-        },
-        {
-          display_name:  'Attendee',
-          variable_name: 'attendee_name',
-          value:         name,
-        },
-      ],
-    },
+  const metadata = {
+    platform: 'eventsphere',
+    ticket_id: ticket.ticketId,
+    ticket_type: ticketType,
+    event_id: String(event._id),
+    event_title: event.title,
+    event_date: event.startDate,
+    event_time: event.startTime,
+    event_location: event.location || '',
+    organiser_id: String(event.organizerId),
+    base_amount: String(priceInKobo),
+    fee_amount: String(feeInKobo),
+    total_amount: String(totalAmountInKobo),
+    attendee_name: name,
+    attendee_email: email,
+    custom_fields: [
+      { display_name: 'Platform', variable_name: 'platform', value: 'EventSphere' },
+      { display_name: 'Event', variable_name: 'event_title', value: event.title },
+      { display_name: 'Ticket ID', variable_name: 'ticket_id', value: ticket.ticketId },
+      { display_name: 'Attendee', variable_name: 'attendee_name', value: name },
+    ],
   }
 
-  const response = await fetch('https://api.paystack.co/transaction/initialize', {
-    method:  'POST',
-    headers: {
-      Authorization:  `Bearer ${paystackSecretKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+  const { authorizationUrl, reference } = await initializePaystackPayment({
+    email,
+    amount: totalAmountInKobo,
+    currency: 'NGN',
+    callbackUrl: `${appUrl}/tickets/${ticket.ticketId}?reference={PAYSTACK_REFERENCE}`,
+    metadata,
+    channels: ['card', 'bank_transfer', 'ussd', 'bank'],
   })
 
-  const payload = await response.json()
-  if (!response.ok || !payload.status) {
-    throw new Error(payload?.message || 'Failed to initialize Paystack payment')
-  }
-
   return {
-    authUrl:   payload.data.authorization_url,  // send this to the frontend
-    reference: payload.data.reference,
+    authUrl: authorizationUrl,
+    reference,
     amount:    totalAmountInKobo,
     fee:       feeInKobo,
     baseAmount: priceInKobo,
@@ -186,8 +99,7 @@ export async function registerForEvent(req, res) {
     const existing = await Ticket.findOne({ eventId, attendeeEmail: email })
     if (existing) {
       if (existing.status === 'confirmed' || existing.status === 'checked-in') {
-        return res.status(200).json({
-          message: 'A ticket for this email already exists',
+        return sendSuccess(res, 'A ticket for this email already exists', {
           ticket: toClientTicket(existing), paymentRequired: false, redirect: null,
         })
       }
@@ -198,18 +110,16 @@ export async function registerForEvent(req, res) {
           existing.attendeeName = existing.attendeeName || name
           await existing.save()
           sendTicketEmail(existing, event).catch(console.error)
-          return res.status(200).json({
-            message: 'Your ticket has been confirmed.',
+          return sendSuccess(res, 'Your ticket has been confirmed.', {
             ticket: toClientTicket(existing), paymentRequired: false, redirect: null,
           })
         }
 
         // retry payment for existing pending ticket
-        const { authUrl, reference } = await initializePaystackPayment({ email, name, ticket: existing, event, ticketType })
+        const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket: existing, event, ticketType })
         existing.paymentReference = reference
         await existing.save()
-        return res.status(200).json({
-          message: 'Proceed to payment',
+        return sendSuccess(res, 'Proceed to payment', {
           ticket: toClientTicket(existing), paymentRequired: true, redirect: authUrl,
         })
       }
@@ -222,10 +132,9 @@ export async function registerForEvent(req, res) {
         ticketType, price: 0, status: 'confirmed',
       })
       sendTicketEmail(ticket, event).catch(console.error)
-      return res.status(201).json({
-        message: 'Registered! Check your email for your ticket.',
+      return sendSuccess(res, 'Registered! Check your email for your ticket.', {
         ticket: toClientTicket(ticket), paymentRequired: false, redirect: null,
-      })
+      }, 201)
     }
 
     /* ── PAID flow ── */
@@ -237,16 +146,15 @@ export async function registerForEvent(req, res) {
       ticketType, price: priceInKobo / 100, status: 'pending',
     })
 
-    const { authUrl, reference } = await initializePaystackPayment({ email, name, ticket, event, ticketType })
+    const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket, event, ticketType })
     ticket.paymentReference = reference
     await ticket.save()
 
-    return res.status(201).json({
-      message: 'Proceed to payment',
+    return sendSuccess(res, 'Proceed to payment', {
       ticket: toClientTicket(ticket),
       paymentRequired: true,
-      redirect: authUrl,   // frontend: window.location.href = redirect
-    })
+      redirect: authUrl,
+    }, 201)
   } catch (err) {
     console.error('Register error:', err)
     return sendError(res, 500, 'Registration failed')
@@ -266,29 +174,17 @@ export async function verifyPaystackPayment(req, res) {
     if (!ticketId || !reference) {
       return sendError(res, 400, 'ticketId and reference are required')
     }
-    if (!paystackSecretKey) {
-      return sendError(res, 500, 'Paystack secret key is missing')
-    }
-
     const ticket = await Ticket.findOne({ ticketId })
     if (!ticket) return sendError(res, 404, 'Ticket not found')
 
     // idempotent — already confirmed, just return it
     if (ticket.status === 'confirmed' || ticket.status === 'checked-in') {
       const event = await Event.findById(ticket.eventId)
-      return res.json({ message: 'Payment already verified', ticket: toClientTicket(ticket), event })
+      return sendSuccess(res, 'Payment already verified', { ticket: toClientTicket(ticket), event })
     }
 
     // verify with Paystack
-    const response = await fetch(
-      `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-      { headers: { Authorization: `Bearer ${paystackSecretKey}` } }
-    )
-    const payload = await response.json()
-
-    if (!response.ok || !payload.status) {
-      return sendError(res, 400, payload?.message || 'Verification failed')
-    }
+    const payload = await verifyPaystackTransaction(reference)
     if (payload.data?.status !== 'success') {
       return sendError(res, 400, 'Payment not completed yet')
     }
@@ -306,9 +202,8 @@ export async function verifyPaystackPayment(req, res) {
     const event = await Event.findById(ticket.eventId)
     if (event) sendTicketEmail(ticket, event).catch(console.error)
 
-    return res.json({
-      message: 'Payment verified. Check your email for your ticket.',
-      ticket:  toClientTicket(ticket),
+    return sendSuccess(res, 'Payment verified. Check your email for your ticket.', {
+      ticket: toClientTicket(ticket),
       event,
     })
   } catch (err) {
@@ -325,7 +220,7 @@ export async function getTicket(req, res) {
     const ticket = await Ticket.findOne({ ticketId: req.params.ticketId })
     if (!ticket) return sendError(res, 404, 'Ticket not found')
     const event = await Event.findById(ticket.eventId)
-    return res.json({ ticket: toClientTicket(ticket), event })
+    return sendSuccess(res, 'Ticket loaded', { ticket: toClientTicket(ticket), event })
   } catch (err) {
     return sendError(res, 500, 'Failed to load ticket')
   }
@@ -340,25 +235,25 @@ export async function verifyTicket(req, res) {
     const { ticketId } = req.params
     const ticket = await Ticket.findOne({ ticketId })
 
-    if (!ticket) return res.status(404).json({ valid: false, message: 'Ticket not found', success: false })
+    if (!ticket) return sendError(res, 404, 'Ticket not found', { valid: false })
 
     const event = await Event.findOne({ _id: ticket.eventId, organizerId: req.user.userId })
-    if (!event)  return res.status(403).json({ valid: false, message: 'Not your event', success: false })
+    if (!event)  return sendError(res, 403, 'Not your event', { valid: false })
 
-    if (ticket.status === 'pending')     return res.status(400).json({ valid: false, message: 'Payment not completed', success: false })
-    if (ticket.status === 'checked-in')  return res.status(409).json({ valid: false, message: 'Ticket already used', checkedInAt: ticket.checkedInAt, success: false })
+    if (ticket.status === 'pending')     return sendError(res, 400, 'Payment not completed', { valid: false })
+    if (ticket.status === 'checked-in')  return sendError(res, 409, 'Ticket already used', { valid: false, checkedInAt: ticket.checkedInAt })
 
     ticket.status      = 'checked-in'
     ticket.checkedInAt = new Date()
     await ticket.save()
 
-    return res.json({
-      valid: true, message: 'Check-in successful ✓',
+    return sendSuccess(res, 'Check-in successful', {
+      valid: true,
       ticket: toClientTicket(ticket),
-      event:  { title: event.title, startDate: event.startDate, startTime: event.startTime },
+      event: { title: event.title, startDate: event.startDate, startTime: event.startTime },
     })
   } catch (err) {
-    return res.status(500).json({ valid: false, message: 'Verification failed', success: false })
+    return sendError(res, 500, 'Verification failed', { valid: false })
   }
 }
 
@@ -371,7 +266,7 @@ export async function listEventTickets(req, res) {
     const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
     if (!event) return sendError(res, 404, 'Event not found')
     const tickets = await Ticket.find({ eventId }).sort({ createdAt: -1 })
-    return res.json({ tickets: tickets.map(toClientTicket) })
+    return sendSuccess(res, 'Tickets loaded', { tickets: tickets.map(toClientTicket) })
   } catch (err) {
     return sendError(res, 500, 'Failed to load tickets')
   }

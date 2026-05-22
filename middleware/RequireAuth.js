@@ -1,10 +1,11 @@
 import jwt from 'jsonwebtoken'
+import { sendError } from '../utils/response.js'
  
 export default function requireAuth(req, res, next) {
   const auth = req.headers.authorization
  
   if (!auth || !auth.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'Unauthorized — no token provided', success: false })
+    return sendError(res, 401, 'Unauthorized — no token provided')
   }
  
   const token = auth.slice(7) // strip "Bearer "
@@ -14,7 +15,7 @@ export default function requireAuth(req, res, next) {
     req.user = decoded // { userId, email, iat, exp }
     next()
   } catch (err) {
-    return res.status(401).json({ message: 'Token invalid or expired', success: false })
+    return sendError(res, 401, 'Token invalid or expired')
   }
 }
  
