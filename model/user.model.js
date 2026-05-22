@@ -1,26 +1,33 @@
 import mongoose from 'mongoose'
- 
+
 const userSchema = new mongoose.Schema(
   {
     email: {
-      type:     String,
+      type: String,
       required: true,
-      unique:   true,
+      unique: true,
       lowercase: true,
-    passwordHash: {
-      type:    String,
+      index: true,
+    },
+    name: {
+      type: String,
       default: '',
     },
     isEmailVerified: {
-      type:    Boolean,
+      type: Boolean,
       default: false,
     },
     verifiedAt: {
-      type:    Date,
+      type: Date,
       default: null,
     },
-    timestamps: true, // adds createdAt + updatedAt automatically
-  }
+    // DEPRECATED: passwordHash - no longer used in OTP-only auth
+    passwordHash: {
+      type: String,
+      default: '',
+    },
+  },
+  { timestamps: true }
 )
- 
+
 export default mongoose.model('User', userSchema)

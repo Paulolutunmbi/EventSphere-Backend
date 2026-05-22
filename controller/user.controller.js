@@ -1,144 +1,124 @@
 import jwt from 'jsonwebtoken'
 import User from '../model/user.model.js'
-import { sendEmail } from '../services/emailService.js'
-import { otpEmailTemplate } from '../services/emailTemplates.js'
 import { sendError, sendSuccess } from '../utils/response.js'
+import { createAndSendOtp, verifyOtpCode, canRequestNewOtp } from '../services/otpService.js'
 
-const otpStore = new Map()
- 
-function makeOtp() {
-  return String(Math.floor(100000 + Math.random() * 900000))
-}
-
-async function issueOtp({ email, name = '', purpose = 'login' }) {
-  const otp = makeOtp()
-  const expiresAt = Date.now() + 10 * 60 * 1000
-
-  otpStore.set(email.toLowerCase(), { otp, expiresAt, name, purpose })
-
-  const template = otpEmailTemplate({ otp, expiresMinutes: 10 })
-  await sendEmail({
-    to: email,
-    subject: template.subject,
-    text: template.text,
-    html: template.html,
-  })
-}
- 
 /* ─────────────────────────────────────
    POST /api/auth/send-otp
-   Body: { email }
+   Body: { email, name? }
 ───────────────────────────────────── */
 async function sendOtp(req, res) {
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  const name = String(req.body?.name || '').trim()
- 
-  if (!email || !email.includes('@')) {
-    return sendError(res, 400, 'Valid email required')
-  }
- 
   try {
-    await issueOtp({ email, name })
-    return sendSuccess(res, 'OTP sent', { email })
+    const email = String(req.body?.email || '').trim().toLowerCase()
+    const name = String(req.body?.name || '').trim()
+
+    if (!email || !email.includes('@')) {
+      return sendError(res, 400, 'Valid email is required')
+    }
+
+    // Check rate limiting
+    const { canRequest, secondsUntilRetry } = await canRequestNewOtp({ email })
+    if (!canRequest) {
+      return sendError(
+        res,
+        429,
+        `Please wait ${secondsUntilRetry} seconds before requesting another code`
+      )
+    }
+
+    await createAndSendOtp({ email, name, purpose: 'signup' })
+    return sendSuccess(res, 'Verification code sent to your email', { email })
   } catch (err) {
-    console.error('Email send error:', err)
-    return sendError(res, 500, 'Failed to send email')
+    console.error('Send OTP error:', err.message)
+    return sendError(res, 500, err.message || 'Failed to send verification code')
   }
 }
- 
+
 /* ─────────────────────────────────────
    POST /api/auth/verify-otp
-   Body: { email, otp }
+   Body: { email, code }
 ───────────────────────────────────── */
 async function verifyOtp(req, res) {
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  const otp = String(req.body?.otp || '').trim()
-  const key = email?.toLowerCase()
-  const record = otpStore.get(key)
- 
-  if (!record) {
-    return sendError(res, 400, 'No code was sent to this email')
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase()
+    const code = String(req.body?.code || '').trim()
+
+    if (!email || !code) {
+      return sendError(res, 400, 'Email and verification code are required')
+    }
+
+    // Verify OTP code
+    const otpResult = await verifyOtpCode({ email, code })
+
+    // Find or create user
+    let user = await User.findOne({ email: otpResult.email })
+    if (!user) {
+      user = await User.create({
+        email: otpResult.email,
+        name: otpResult.name,
+        isEmailVerified: true,
+        verifiedAt: new Date(),
+      })
+    } else {
+      // Update verification status if needed
+      if (!user.isEmailVerified) {
+        user.isEmailVerified = true
+        user.verifiedAt = new Date()
+        await user.save()
+      }
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: user._id, email: user.email },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    )
+
+    return sendSuccess(res, 'Email verified successfully', {
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        isEmailVerified: user.isEmailVerified,
+      },
+      token,
+    })
+  } catch (err) {
+    console.error('Verify OTP error:', err.message)
+    return sendError(res, 400, err.message || 'Verification failed')
   }
- 
-  if (Date.now() > record.expiresAt) {
-    otpStore.delete(key)
-    return sendError(res, 400, 'Code expired — please request a new one')
-  }
- 
-  if (record.otp !== otp) {
-    return sendError(res, 400, 'Incorrect code')
-  }
- 
-  // ✅ Valid — consume it so it can't be reused
-  otpStore.delete(key)
- 
-  // Look up existing user or create a new one
-  let user = await User.findOne({ email: key })
-  if (!user) {
-    const fallbackName = key.split('@')[0] || ''
-    user = await User.create({ email: key, name: record.name || fallbackName })
-  }
- 
-  // Sign JWT
-  const token = jwt.sign(
-    { userId: user._id, email: user.email },
-    process.env.JWT_SECRET,
-    { expiresIn: '7d' }
-  )
- 
-  return sendSuccess(res, 'Verification successful', {
-    user: { id: user._id, email: user.email, name: user.name },
-    token,
-  })
 }
- 
+
 /* ─────────────────────────────────────
    GET /api/auth/me  (protected)
 ───────────────────────────────────── */
 async function getMe(req, res) {
-  // req.user is set by requireAuth middleware
-  const user = await User.findById(req.user.userId).select('-__v')
-  if (!user) return sendError(res, 404, 'User not found')
-  return sendSuccess(res, 'Profile loaded', { user })
-}
-
-async function register(req, res) {
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  const name = String(req.body?.name || '').trim()
-  if (!email || !email.includes('@')) return sendError(res, 400, 'Valid email required')
-
   try {
-    await issueOtp({ email, name, purpose: 'register' })
-    return sendSuccess(res, 'Registration code sent', { email })
+    // req.user is set by requireAuth middleware
+    const user = await User.findById(req.user.userId).select('-__v')
+    if (!user) {
+      return sendError(res, 404, 'User not found')
+    }
+    return sendSuccess(res, 'Profile loaded', { user })
   } catch (err) {
-    console.error('Register email error:', err)
-    return sendError(res, 500, 'Failed to send registration code')
+    console.error('Get me error:', err.message)
+    return sendError(res, 500, 'Failed to load profile')
   }
 }
 
-async function login(req, res) {
-  return sendOtp(req, res)
-}
-
+/* ─────────────────────────────────────
+   POST /api/auth/logout
+───────────────────────────────────── */
 async function logout(req, res) {
-  return sendSuccess(res, 'Logged out', null)
-}
-
-async function resetPassword(req, res) {
-  const email = String(req.body?.email || '').trim().toLowerCase()
-  if (!email || !email.includes('@')) return sendError(res, 400, 'Valid email required')
-
   try {
-    await issueOtp({ email, purpose: 'reset' })
-    return sendSuccess(res, 'Password reset code sent', { email })
+    // Logout is client-side (token removal from localStorage)
+    // Server can optionally maintain a token blacklist
+    return sendSuccess(res, 'Logged out successfully', null)
   } catch (err) {
-    console.error('Reset email error:', err)
-    return sendError(res, 500, 'Failed to send reset code')
+    console.error('Logout error:', err.message)
+    return sendError(res, 500, 'Logout failed')
   }
 }
 
-async function verifyEmail(req, res) {
-  return verifyOtp(req, res)
-}
- 
-export { sendOtp, verifyOtp, getMe, register, login, logout, resetPassword, verifyEmail }
+export { sendOtp, verifyOtp, getMe, logout }
