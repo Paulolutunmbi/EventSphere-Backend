@@ -21,11 +21,6 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
-    // DEPRECATED: passwordHash - no longer used in OTP-only auth
-    passwordHash: {
-      type: String,
-      default: '',
-    },
   },
   { timestamps: true }
 )

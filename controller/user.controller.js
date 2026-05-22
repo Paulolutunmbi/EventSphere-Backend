@@ -26,7 +26,7 @@ async function sendOtp(req, res) {
       )
     }
 
-    await createAndSendOtp({ email, name, purpose: 'signup' })
+    await createAndSendOtp({ email, name })
     return sendSuccess(res, 'Verification code sent to your email', { email })
   } catch (err) {
     console.error('Send OTP error:', err.message)
