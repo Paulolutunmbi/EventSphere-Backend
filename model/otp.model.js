@@ -6,7 +6,6 @@ const otpSchema = new mongoose.Schema(
       type: String,
       required: true,
       lowercase: true,
-      index: true,
     },
     code: {
       type: String,
@@ -25,11 +24,6 @@ const otpSchema = new mongoose.Schema(
     name: {
       type: String,
       default: '',
-    },
-    purpose: {
-      type: String,
-      enum: ['signup'],
-      default: 'signup',
     },
   },
   { timestamps: true }

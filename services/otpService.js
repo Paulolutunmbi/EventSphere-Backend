@@ -17,7 +17,7 @@ function generateOtpCode() {
 /**
  * Create and send OTP to email
  */
-export async function createAndSendOtp({ email, name = '', purpose = 'signup' }) {
+export async function createAndSendOtp({ email, name = '' }) {
   if (!email || !email.includes('@')) {
     throw new Error('Valid email is required')
   }
@@ -35,7 +35,6 @@ export async function createAndSendOtp({ email, name = '', purpose = 'signup' })
     code,
     expiresAt,
     name: name.trim(),
-    purpose,
     attempts: 0,
   })
 
