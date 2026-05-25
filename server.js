@@ -31,7 +31,7 @@ app.use(
 app.use(express.json({ limit: '10mb' }))
 
 // health check — hit this first in Thunder Client to confirm server is up
-app.get('/', (req, res) => res.json({ success: true, message: 'EventSphere API is running ✅', data: null }))
+app.get('/', (req, res) => res.json({ success: true, message: 'EventsNest API is running ✅', data: null }))
 
 // routes
 app.use('/api/auth', authRoutes)

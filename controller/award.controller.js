@@ -188,7 +188,7 @@ export async function initializeVotePayment(req, res) {
     const appUrl    = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
 
     const metadata = {
-      platform: 'eventsphere',
+      platform: 'eventsnest',
       payment_type: 'vote',
       nominee: selectedContestant.name,
       contestant_id: String(selectedContestant._id),
@@ -202,7 +202,7 @@ export async function initializeVotePayment(req, res) {
       name,
       email,
       custom_fields: [
-        { display_name: 'Platform', variable_name: 'platform', value: 'EventSphere' },
+        { display_name: 'Platform', variable_name: 'platform', value: 'EventsNest' },
         { display_name: 'Payment Type', variable_name: 'payment_type', value: 'Vote' },
         { display_name: 'Award', variable_name: 'award_title', value: award.title },
         { display_name: 'Voting For', variable_name: 'nominee', value: selectedContestant.name },
