@@ -34,7 +34,7 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType 
   const appUrl      = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
 
   const metadata = {
-    platform: 'eventsphere',
+    platform: 'eventsnest',
     ticket_id: ticket.ticketId,
     ticket_type: ticketType,
     event_id: String(event._id),
@@ -49,7 +49,7 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType 
     attendee_name: name,
     attendee_email: email,
     custom_fields: [
-      { display_name: 'Platform', variable_name: 'platform', value: 'EventSphere' },
+      { display_name: 'Platform', variable_name: 'platform', value: 'EventsNest' },
       { display_name: 'Event', variable_name: 'event_title', value: event.title },
       { display_name: 'Ticket ID', variable_name: 'ticket_id', value: ticket.ticketId },
       { display_name: 'Attendee', variable_name: 'attendee_name', value: name },

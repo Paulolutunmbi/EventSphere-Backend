@@ -1,12 +1,12 @@
 export function otpEmailTemplate({ otp, expiresMinutes = 10 }) {
   return {
-    subject: `${otp} is your EventSphere code`,
+    subject: `${otp} is your EventsNest code`,
     text: `Your one-time sign-in code is: ${otp}\n\nExpires in ${expiresMinutes} minutes.`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px;background:#14141a;color:#e8e8ec;border-radius:16px;">
         <p style="font-size:28px;margin:0 0 16px">✦</p>
         <h2 style="margin:0 0 8px;font-size:20px">Your sign-in code</h2>
-        <p style="color:#8a8a96;margin:0 0 24px">Use this code to sign in to EventSphere. It expires in ${expiresMinutes} minutes.</p>
+        <p style="color:#8a8a96;margin:0 0 24px">Use this code to sign in to EventsNest. It expires in ${expiresMinutes} minutes.</p>
         <div style="font-size:36px;font-weight:700;letter-spacing:0.15em;text-align:center;padding:20px;background:rgba(255,255,255,0.05);border-radius:12px;border:1px solid rgba(255,255,255,0.08)">
           ${otp}
         </div>
