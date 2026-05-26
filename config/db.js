@@ -12,7 +12,11 @@ const connectDB = async () => {
         console.log('Connected to MongoDB successfully');
     } catch (error) {
         console.error('MongoDB connection failed:', error.message);
-        process.exit(1);
+        // Exit in production so deployment systems detect the failure. During
+        // development we keep the process alive to allow testing non-DB endpoints.
+        if (process.env.NODE_ENV === 'production') {
+            process.exit(1);
+        }
     }
 };
  
