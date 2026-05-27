@@ -113,11 +113,13 @@ function getNomineeVoteCount(award, nominee) {
 }
 
 function toPublicAward(award) {
+  const nominees = Array.isArray(award.nominees) ? award.nominees : []
   return {
     id:          award._id,
     title:       award.title,
     description: award.description,
-    nominees:    Array.isArray(award.nominees) ? award.nominees : [],
+    nominees,
+    nomineeCount: nominees.length,
     voteCount:   getVoteCount(award),
     voterCount:  getVoterCount(award),
     createdAt:   award.createdAt,
@@ -125,16 +127,16 @@ function toPublicAward(award) {
 }
 
 function toAdminAward(award) {
+  const nominees = Array.isArray(award.nominees) ? award.nominees : []
   return {
     id:          award._id,
     title:       award.title,
     description: award.description,
-    nominees: Array.isArray(award.nominees)
-      ? award.nominees.map(nominee => ({
-          name:      nominee,
-          voteCount: getNomineeVoteCount(award, nominee),
-        }))
-      : [],
+    nominees: nominees.map(nominee => ({
+      name:      nominee,
+      voteCount: getNomineeVoteCount(award, nominee),
+    })),
+    nomineeCount: nominees.length,
     voteCount:  getVoteCount(award),
     voterCount: getVoterCount(award),
     votes: Array.isArray(award.votes)
@@ -299,6 +301,8 @@ export async function createAward(req, res) {
   }
 }
 
+
+
 /* ══════════════════════════════════════════════════════════
    voteAward   POST /api/events/:eventId/awards/:awardId/vote
    Body: { reference, nominee, email?, name?, quantity? }
@@ -442,5 +446,33 @@ export async function voteAward(req, res) {
   } catch (error) {
     console.error('Vote award error:', error)
     return sendError(res, 500, 'Failed to submit vote')
+  }
+}
+/* ═════════════════════════════════════════════════════════════════════
+   deleteAward   DELETE /api/awards/events/:eventId/:awardId
+   Protected — only event organizer may delete an award. When deleting,
+   cleanup related votes and contestants.
+═════════════════════════════════════════════════════════════════════ */
+export async function deleteAward(req, res) {
+  try {
+    const { eventId, awardId } = req.params
+
+    const award = await Award.findOne({ _id: awardId, eventId })
+    if (!award) return sendError(res, 404, 'Award not found')
+
+    // Verify requester is event organiser
+    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    if (!event) return sendError(res, 403, 'Not authorised to delete this award')
+
+    // Remove dependent records
+    await Vote.deleteMany({ eventId, awardId })
+    await Contestant.deleteMany({ eventId, awardId })
+
+    await Award.deleteOne({ _id: awardId })
+
+    return sendSuccess(res, 'Award deleted')
+  } catch (error) {
+    console.error('Delete award error:', error)
+    return sendError(res, 500, 'Failed to delete award')
   }
 }
