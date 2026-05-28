@@ -17,6 +17,7 @@ function buildEventPayload(body = {}) {
     location: body.location || '',
     isPublic: body.isPublic ?? true,
     ticketPrice: body.ticketPrice ?? 'Free',
+    ticketPrices: body.ticketPrices ?? null,
     requireApproval: body.requireApproval ?? false,
     capacity: body.capacity ?? 'Unlimited',
     theme: body.theme || 'minimal',
@@ -45,6 +46,7 @@ function toClientEventWithHost(event, host) {
     capacity: event.capacity,
     theme: event.theme,
     coverImage: event.coverImage,
+    ticketPrices: event.ticketPrices || null,
     invitedGuests: Array.isArray(event.invitedGuests) ? event.invitedGuests.map(guest => ({
       email: guest.email,
       sentAt: guest.sentAt,
@@ -163,6 +165,7 @@ export async function updateEvent(req, res) {
       endDate: req.body?.endDate,
       endTime: req.body?.endTime,
       location: req.body?.location,
+      ticketPrices: req.body?.ticketPrices,
       coverImage: req.body?.coverImage,
       isPublic: req.body?.isPublic,
     }
@@ -368,7 +371,6 @@ export async function getEventAdminStats(req, res) {
                 : 0,
             }))
           : [],
-        nomineeCount: Array.isArray(award.nominees) ? award.nominees.length : 0,
         voteCount: getVoteCount(award),
         votes: Array.isArray(award.votes) ? award.votes.map(vote => ({
           name: vote.name,
