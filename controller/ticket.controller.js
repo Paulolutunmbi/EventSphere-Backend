@@ -9,12 +9,13 @@ import { sendError, sendSuccess } from '../utils/response.js'
 /* ── send ticket email with QR ── */
 async function sendTicketEmail(ticket, event) {
   const ticketUrl = buildTicketUrl(ticket.ticketId)
+  const qrDataUrl = await QRCode.toDataURL(ticketUrl, {
+    width: 400,
+    margin: 2,
+    color: { dark: '#0a0a0a', light: '#ffffff' },
+  })
 
-  // Use a backend-served QR image so email clients can fetch it.
-  const backendHost = (process.env.BACKEND_URL || (`http://localhost:${process.env.PORT || 3333}`)).replace(/\/$/, '')
-  const qrImageUrl = `${backendHost}/api/tickets/${ticket.ticketId}/qr`
-
-  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl: qrImageUrl })
+  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl })
   await sendEmail({
     to: ticket.attendeeEmail,
     subject: template.subject,
