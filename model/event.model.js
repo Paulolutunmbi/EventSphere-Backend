@@ -48,6 +48,14 @@ const eventSchema = new mongoose.Schema(
       default: 'Free',
       trim: true,
     },
+    ticketPrices: {
+      type: {
+        regular: { type: Number, default: 0 },
+        vip: { type: Number, default: 0 },
+        table: { type: Number, default: 0 },
+      },
+      default: null,
+    },
     requireApproval: {
       type: Boolean,
       default: false,

@@ -44,10 +44,20 @@ export async function getTicketQr(req, res) {
    Paystack initialization — single place so both
    new tickets and retries share the same metadata
 ───────────────────────────────────────────────── */
-async function initializeTicketPayment({ email, name, ticket, event, ticketType }) {
-  const priceInKobo = parsePriceToKobo(event.ticketPrice)
+function getTicketBaseKobo(event, ticketType) {
+  // ticketPrices stored in Naira as numbers (regular, vip, table)
+  if (event?.ticketPrices && typeof event.ticketPrices === 'object') {
+    const val = event.ticketPrices[ticketType]
+    if (typeof val === 'number' && Number.isFinite(val)) return Math.round(val * 100)
+  }
+  return parsePriceToKobo(event.ticketPrice)
+}
+
+async function initializeTicketPayment({ email, name, ticket, event, ticketType, donationNaira = 0 }) {
+  const priceInKobo = getTicketBaseKobo(event, ticketType)
+  const donationKobo = Math.max(0, Math.round(Number(donationNaira || 0) * 100))
   const feeInKobo = calculateTicketFee(priceInKobo)
-  const totalAmountInKobo = priceInKobo + feeInKobo
+  const totalAmountInKobo = priceInKobo + donationKobo + feeInKobo
   const appUrl      = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
 
   const metadata = {
@@ -62,6 +72,7 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType 
     organiser_id: String(event.organizerId),
     base_amount: String(priceInKobo),
     fee_amount: String(feeInKobo),
+    donation_amount: String(donationKobo),
     total_amount: String(totalAmountInKobo),
     attendee_name: name,
     attendee_email: email,
@@ -88,6 +99,7 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType 
     amount:    totalAmountInKobo,
     fee:       feeInKobo,
     baseAmount: priceInKobo,
+    donation: donationKobo,
   }
 }
 
@@ -111,6 +123,8 @@ export async function registerForEvent(req, res) {
     if (!name) return sendError(res, 400, 'Could not derive a name from the email provided')
 
     const isFree = isFreeTicketPrice(event.ticketPrice)
+      const donationInput = Number(req.body?.donation || 0)
+      const donationNaira = Number.isFinite(donationInput) && donationInput > 0 ? donationInput : 0
 
     /* ── duplicate check ── */
     const existing = await Ticket.findOne({ eventId, attendeeEmail: email })
@@ -133,7 +147,7 @@ export async function registerForEvent(req, res) {
         }
 
         // retry payment for existing pending ticket
-        const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket: existing, event, ticketType })
+        const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket: existing, event, ticketType, donationNaira })
         existing.paymentReference = reference
         await existing.save()
         return sendSuccess(res, 'Proceed to payment', {
@@ -155,15 +169,16 @@ export async function registerForEvent(req, res) {
     }
 
     /* ── PAID flow ── */
-    const priceInKobo = parsePriceToKobo(event.ticketPrice)
+    const priceInKobo = getTicketBaseKobo(event, ticketType)
+    const donationKobo = Math.max(0, Math.round(donationNaira * 100))
 
     // create pending ticket first so we have a ticketId for the metadata
     const ticket = await Ticket.create({
       eventId, attendeeName: name, attendeeEmail: email,
-      ticketType, price: priceInKobo / 100, status: 'pending',
+      ticketType, price: (priceInKobo + donationKobo) / 100, status: 'pending',
     })
 
-    const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket, event, ticketType })
+    const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket, event, ticketType, donationNaira })
     ticket.paymentReference = reference
     await ticket.save()
 
@@ -210,6 +225,13 @@ export async function verifyPaystackPayment(req, res) {
     const meta = payload.data?.metadata || {}
     if (meta.ticket_id && meta.ticket_id !== ticket.ticketId) {
       return sendError(res, 400, 'Reference does not match this ticket')
+    }
+
+    // ensure paid amount matches expected total recorded in metadata
+    const paidAmount = Number(payload.data?.amount || 0)
+    const expectedTotal = Number(meta.total_amount || meta.totalAmount || 0)
+    if (expectedTotal && paidAmount !== expectedTotal) {
+      return sendError(res, 400, 'Payment amount does not match expected total')
     }
 
     ticket.status           = 'confirmed'
