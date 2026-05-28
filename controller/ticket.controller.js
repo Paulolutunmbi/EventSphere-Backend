@@ -9,18 +9,35 @@ import { sendError, sendSuccess } from '../utils/response.js'
 /* ── send ticket email with QR ── */
 async function sendTicketEmail(ticket, event) {
   const ticketUrl = buildTicketUrl(ticket.ticketId)
-  const qrDataUrl = await QRCode.toDataURL(ticketUrl, {
-    width: 400, margin: 2,
-    color: { dark: '#0a0a0a', light: '#ffffff' },
-  })
 
-  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl })
+  // Use a backend-served QR image so email clients can fetch it.
+  const backendHost = (process.env.BACKEND_URL || (`http://localhost:${process.env.PORT || 3333}`)).replace(/\/$/, '')
+  const qrImageUrl = `${backendHost}/api/tickets/${ticket.ticketId}/qr`
+
+  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl: qrImageUrl })
   await sendEmail({
     to: ticket.attendeeEmail,
     subject: template.subject,
     html: template.html,
     text: template.text,
   })
+}
+
+export async function getTicketQr(req, res) {
+  try {
+    const { ticketId } = req.params
+    const ticket = await Ticket.findOne({ ticketId })
+    if (!ticket) return sendError(res, 404, 'Ticket not found')
+
+    const ticketUrl = buildTicketUrl(ticket.ticketId)
+    const buffer = await QRCode.toBuffer(ticketUrl, { width: 400, margin: 2, color: { dark: '#0a0a0a', light: '#ffffff' } })
+
+    res.setHeader('Content-Type', 'image/png')
+    return res.send(buffer)
+  } catch (err) {
+    console.error('Get ticket QR error:', err)
+    return sendError(res, 500, 'Failed to generate QR')
+  }
 }
 
 /* ─────────────────────────────────────────────────

@@ -19,12 +19,7 @@ const awardSchema = new mongoose.Schema(
       trim: true,
     },
     nominees: {
-      type: [
-        {
-          type: String,
-          trim: true,
-        },
-      ],
+      type: [mongoose.Schema.Types.Mixed],
       default: [],
       validate: {
         validator(value) {

@@ -34,6 +34,4 @@ router.post('/events/:eventId/:awardId/vote', voteAward)
 // DELETE /api/awards/events/:eventId/:awardId
 // Remove award and related votes/contestants (organiser only)
 router.delete('/events/:eventId/:awardId', requireAuth, deleteAward)
-
-
 export default router

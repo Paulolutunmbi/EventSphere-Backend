@@ -46,10 +46,47 @@ function getVoterCount(award) {
 }
 
 function normalizeNominees(input) {
+  const slugifyValue = value => String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+
+  const extractName = value => {
+    if (!value) return ''
+    if (typeof value === 'string' || typeof value === 'number') return String(value).trim()
+    if (typeof value !== 'object') return ''
+    if (typeof value.name === 'string' || typeof value.name === 'number') return String(value.name).trim()
+    if (value.name && typeof value.name === 'object') {
+      return String(value.name.name || value.name.label || value.name.value || '').trim()
+    }
+    return String(value.nominee || value.label || value.value || value.title || value.text || value.fullName || '').trim()
+  }
+
+  const extractImageUrl = value => {
+    if (!value || typeof value !== 'object') return ''
+    const img = value.image || value.photo || value.picture || value.avatar || value.imageUrl || ''
+    if (typeof img === 'string') return img.trim()
+    if (img && typeof img === 'object') return String(img.url || img.src || img.path || img.value || '').trim()
+    return ''
+  }
+
   const nominees = Array.isArray(input)
     ? input
     : String(input || '').split(/\n|,/).map(v => v.trim())
-  return [...new Set(nominees.map(v => String(v || '').trim()).filter(Boolean))].slice(0, 6)
+
+  const normalized = nominees
+    .map(v => {
+      const name = extractName(v)
+      if (!name) return null
+      return {
+        name,
+        imageUrl: extractImageUrl(v),
+        slug: typeof v === 'object' && v.slug ? String(v.slug).trim() : slugifyValue(name),
+      }
+    })
+    .filter(Boolean)
+
+  return normalized.slice(0, 6)
 }
 
 function slugify(value) {
@@ -64,7 +101,11 @@ async function syncContestantsForAward(award, eventId) {
   const contestants = []
 
   for (const nominee of nominees) {
-    const name = String(nominee || '').trim()
+    const name = String(
+      typeof nominee === 'string'
+        ? nominee
+        : nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || ''
+    ).trim()
     if (!name) continue
 
     const slug = slugify(name)
@@ -99,7 +140,9 @@ async function resolveContestant({ eventId, awardId, nominee, contestantId }) {
 }
 
 function getNomineeVoteCount(award, nominee) {
-  const target = String(nominee || '').trim().toLowerCase()
+  const target = String(
+    typeof nominee === 'string' ? nominee : nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || ''
+  ).trim().toLowerCase()
   if (!target) return 0
   return Array.isArray(award.votes)
     ? award.votes.reduce(
@@ -113,13 +156,17 @@ function getNomineeVoteCount(award, nominee) {
 }
 
 function toPublicAward(award) {
-  const nominees = Array.isArray(award.nominees) ? award.nominees : []
   return {
     id:          award._id,
     title:       award.title,
     description: award.description,
-    nominees,
-    nomineeCount: nominees.length,
+    nominees:    Array.isArray(award.nominees)
+      ? award.nominees.map(nominee => ({
+          name: typeof nominee === 'string' ? nominee : nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || '',
+          imageUrl: typeof nominee === 'object' ? (nominee.imageUrl || nominee.image || nominee.photo || nominee.picture || nominee.avatar || '') : '',
+          slug: typeof nominee === 'object' ? (nominee.slug || slugify(nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || nominee || '')) : slugify(nominee),
+        }))
+      : [],
     voteCount:   getVoteCount(award),
     voterCount:  getVoterCount(award),
     createdAt:   award.createdAt,
@@ -127,16 +174,18 @@ function toPublicAward(award) {
 }
 
 function toAdminAward(award) {
-  const nominees = Array.isArray(award.nominees) ? award.nominees : []
   return {
     id:          award._id,
     title:       award.title,
     description: award.description,
-    nominees: nominees.map(nominee => ({
-      name:      nominee,
-      voteCount: getNomineeVoteCount(award, nominee),
-    })),
-    nomineeCount: nominees.length,
+    nominees: Array.isArray(award.nominees)
+      ? award.nominees.map(nominee => ({
+          name:      typeof nominee === 'string' ? nominee : nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || '',
+          imageUrl:  typeof nominee === 'object' ? (nominee.imageUrl || nominee.image || nominee.photo || nominee.picture || nominee.avatar || '') : '',
+          slug:      typeof nominee === 'object' ? (nominee.slug || slugify(nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || nominee || '')) : slugify(nominee),
+          voteCount: getNomineeVoteCount(award, nominee),
+        }))
+      : [],
     voteCount:  getVoteCount(award),
     voterCount: getVoterCount(award),
     votes: Array.isArray(award.votes)
@@ -258,11 +307,23 @@ export async function listContestants(req, res) {
     await syncContestantsForAward(award, eventId)
 
     const contestants = await Contestant.find({ eventId, awardId, isActive: true }).sort({ createdAt: 1 })
+    const awardNominees = Array.isArray(award.nominees) ? award.nominees : []
+    const nomineeMap = new Map(
+      awardNominees.map(nominee => {
+        const name = typeof nominee === 'string' ? nominee : nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || ''
+        const slug = typeof nominee === 'object' ? (nominee.slug || slugify(name)) : slugify(name)
+        return [slug, {
+          imageUrl: typeof nominee === 'object' ? (nominee.imageUrl || nominee.image || nominee.photo || nominee.picture || nominee.avatar || '') : '',
+          name,
+        }]
+      })
+    )
     return sendSuccess(res, 'Contestants loaded', {
       contestants: contestants.map(contestant => ({
         id: contestant._id,
         name: contestant.name,
         slug: contestant.slug,
+        imageUrl: nomineeMap.get(contestant.slug)?.imageUrl || '',
         voteCount: contestant.voteCount,
         voterCount: contestant.voterCount,
       })),
@@ -300,8 +361,6 @@ export async function createAward(req, res) {
     return sendError(res, 500, 'Failed to create award')
   }
 }
-
-
 
 /* ══════════════════════════════════════════════════════════
    voteAward   POST /api/events/:eventId/awards/:awardId/vote
@@ -448,6 +507,7 @@ export async function voteAward(req, res) {
     return sendError(res, 500, 'Failed to submit vote')
   }
 }
+
 /* ═════════════════════════════════════════════════════════════════════
    deleteAward   DELETE /api/awards/events/:eventId/:awardId
    Protected — only event organizer may delete an award. When deleting,
