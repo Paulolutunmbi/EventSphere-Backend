@@ -15,39 +15,44 @@ const parseOriginList = (value) =>
     .map((origin) => origin.trim())
     .filter(Boolean)
 
+// 1. Clean up your Set definitions (remove trailing slashes)
 const allowedOrigins = new Set([
   ...parseOriginList(process.env.FRONTEND_URLS),
   ...parseOriginList(process.env.FRONTEND_URL),
   'https://eventsnest.xyz',
   'https://www.eventsnest.xyz',
-  'https://events-nest-frontend.vercel.app/',
+  'https://events-nest-frontend.vercel.app', // Removed trailing slash
+
+  // 👇 ADD THESE LOCALHOST URLS HERE 👇
+  'http://localhost:5173', 
+  'http://127.0.0.1:5173'
 ])
 
-// app.use(
-//   cors({
-//     origin(origin, callback) {
-//       if (!origin || allowedOrigins.has(origin)) {
-//         return callback(null, true)
-//       }
-//       return callback(new Error('Not allowed by CORS'))
-//     },
-//     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-//     allowedHeaders: ['Content-Type', 'Authorization'],
-//   })
-// )
+// 2. Corrected CORS implementation
 app.use(cors({
   origin(origin, callback) {
+    // Allow server-to-server or tools like Postman/Thunder Client (where origin is undefined)
     if (!origin) return callback(null, true)
-    if (allowedOrigins.includes(origin)) return callback(null, true)
+    
+    // Correct method for Sets is .has()
+    if (allowedOrigins.has(origin)) return callback(null, true)
+    
+    // Fallback regex logic for subdomains
     try {
       const host = origin.replace(/^https?:\/\//, '').split(':')[0]
       if (host.endsWith('eventsnest.xyz')) return callback(null, true)
-    } catch(e){}
-    return callback(null, false)
+    } catch (e) {
+      // Clean fail-through
+    }
+    
+    // If it doesn't match anything, deny it safely
+    return callback(new Error('Not allowed by CORS'), false)
   },
-  methods: ['GET','POST','PATCH','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization'],
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true // Optional: Add this if you ever plan to pass cookies/sessions
 }))
+
 
 app.use(express.json({ limit: '10mb' }))
 
