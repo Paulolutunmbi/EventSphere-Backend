@@ -15,13 +15,9 @@ export async function updateNominee(req, res) {
   try {
     const { nomineeId } = req.params
 
-    const nominee = await Contestant.findById(nomineeId)
+    const nominee = req.nominee || await Contestant.findById(nomineeId)
     if (!nominee) {
       return sendError(res, 404, 'Nominee not found')
-    }
-
-    if (String(nominee.createdByAdminId) !== String(req.user?.userId || '')) {
-      return sendError(res, 403, 'Access denied')
     }
 
     const event = await Event.findById(nominee.eventId).select('status')

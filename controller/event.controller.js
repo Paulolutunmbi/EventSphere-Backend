@@ -117,6 +117,10 @@ export async function createEvent(req, res) {
       return sendError(res, 400, 'Event title and date/time fields are required')
     }
 
+    if (payload.status && !['active', 'inactive'].includes(String(payload.status))) {
+      return sendError(res, 400, 'Invalid event status')
+    }
+
     const event = await Event.create({
       ...payload,
       organizerId: req.user.userId,
@@ -193,13 +197,13 @@ export async function updateEventVisibility(req, res) {
     const { eventId } = req.params
     const nextIsPublic = Boolean(req.body?.isPublic)
 
-    const event = await Event.findById(eventId)
+    const event = req.event || await Event.findById(eventId)
 
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
 
-    if (!isEventOwner(event, req.user)) {
+    if (!req.event && !isEventOwner(event, req.user)) {
       return sendError(res, 403, 'Access denied')
     }
 
@@ -217,13 +221,13 @@ export async function updateEventVisibility(req, res) {
 export async function updateEvent(req, res) {
   try {
     const { eventId } = req.params
-    const event = await Event.findById(eventId)
+    const event = req.event || await Event.findById(eventId)
 
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
 
-    if (!isEventOwner(event, req.user)) {
+    if (!req.event && !isEventOwner(event, req.user)) {
       return sendError(res, 403, 'Access denied')
     }
 
@@ -567,5 +571,6 @@ export async function deleteEvent(req, res) {
 }
 
 function isEventOwner(event, user) {
-  return String(event?.createdByAdminId || '') === String(user?.userId || '')
+  const ownerId = event?.createdByAdminId || event?.organizerId
+  return String(ownerId || '') === String(user?.userId || '')
 }
