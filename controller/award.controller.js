@@ -347,8 +347,15 @@ export async function createAward(req, res) {
     if (!title)              return sendError(res, 400, 'Award title is required')
     if (!nominees.length)    return sendError(res, 400, 'Add at least one nominee')
 
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await Event.findById(eventId)
     if (!event) return sendError(res, 404, 'Event not found')
+
+    // authorization: allow organizer or listed co-hosts (by email)
+    const requesterId = String(req.user?.userId || '')
+    const requesterEmail = String(req.user?.email || '').trim().toLowerCase()
+    const isOrganizer = requesterId && String(event.organizerId) === requesterId
+    const isCoHost = requesterEmail && Array.isArray(event.coHosts) && event.coHosts.some(h => String(h.email || '').toLowerCase() === requesterEmail)
+    if (!isOrganizer && !isCoHost) return sendError(res, 403, 'Not authorized to update this award')
 
     const award = await Award.create({ eventId, title, description, nominees })
     await syncContestantsForAward(award, eventId)
@@ -534,5 +541,44 @@ export async function deleteAward(req, res) {
   } catch (error) {
     console.error('Delete award error:', error)
     return sendError(res, 500, 'Failed to delete award')
+  }
+}
+
+/* ══════════════════════════════════════════════════════════
+   updateAward   PATCH /api/awards/events/:eventId/:awardId
+   Body: { title?, description?, nominees? }
+   Organizer only
+══════════════════════════════════════════════════════════ */
+export async function updateAward(req, res) {
+  try {
+    const { eventId, awardId } = req.params
+    const title = typeof req.body?.title === 'string' ? String(req.body.title).trim() : undefined
+    const description = typeof req.body?.description === 'string' ? String(req.body.description).trim() : undefined
+    const nominees = req.body?.nominees ? normalizeNominees(req.body.nominees) : undefined
+
+    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    if (!event) return sendError(res, 404, 'Event not found')
+
+    const allowed = {}
+    if (title !== undefined) allowed.title = title
+    if (description !== undefined) allowed.description = description
+    if (nominees !== undefined) allowed.nominees = nominees
+
+    if (Object.keys(allowed).length === 0) return sendError(res, 400, 'No update fields provided')
+
+    const award = await Award.findOneAndUpdate(
+      { _id: awardId, eventId },
+      allowed,
+      { new: true }
+    )
+
+    if (!award) return sendError(res, 404, 'Award not found')
+
+    await syncContestantsForAward(award, eventId)
+
+    return sendSuccess(res, 'Award updated', { award: toAdminAward(award) })
+  } catch (error) {
+    console.error('Update award error:', error)
+    return sendError(res, 500, 'Failed to update award')
   }
 }
