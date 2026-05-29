@@ -7,39 +7,44 @@ import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTrans
 import { sendError, sendSuccess } from '../utils/response.js'
 
 /* ── send ticket email with QR ── */
-/* ── send ticket email with QR ── */
 async function sendTicketEmail(ticket, event) {
   const ticketUrl = buildTicketUrl(ticket.ticketId)
-  
-  // 1. Generate the raw QR code buffer image
-  const qrBuffer = await QRCode.toBuffer(ticketUrl, {
+  const qrDataUrl = await QRCode.toDataURL(ticketUrl, {
     width: 400,
     margin: 2,
     color: { dark: '#0a0a0a', light: '#ffffff' },
   })
 
-  // 2. Pass 'cid:ticketqrcode' to the template function explicitly
-  const template = ticketEmailTemplate({ 
-    event, 
-    ticket, 
-    ticketUrl, 
-    qrDataUrl: 'cid:ticketqrcode' 
-  })
-
-  // 3. Send email and physically attach the buffer file linked to that cid
+  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl })
   await sendEmail({
     to: ticket.attendeeEmail,
     subject: template.subject,
     html: template.html,
-    text: template.text || `Your ticket for ${event.title}. Open here: ${ticketUrl}`,
-    attachments: [
-      {
-        filename: 'qrcode.png',
-        content: qrBuffer,
-        cid: 'ticketqrcode' // Must match the string layout in qrDataUrl precisely
-      }
-    ]
+    text: template.text,
   })
+}
+
+function syncRsvpFromTicket(event, ticket) {
+  if (!event || !ticket) return false
+
+  const attendeeEmail = String(ticket.attendeeEmail || '').trim().toLowerCase()
+  const attendeeName = String(ticket.attendeeName || '').trim()
+
+  if (!attendeeEmail || !attendeeName) return false
+
+  const exists = Array.isArray(event.rsvps)
+    ? event.rsvps.some(rsvp => String(rsvp.email || '').trim().toLowerCase() === attendeeEmail)
+    : false
+
+  if (exists) return false
+
+  event.rsvps.push({
+    name: attendeeName,
+    email: attendeeEmail,
+    note: ticket.ticketType ? `Auto-RSVP from ${ticket.ticketType} ticket` : 'Auto-RSVP from ticket payment',
+  })
+
+  return true
 }
 
 export async function getTicketQr(req, res) {
@@ -149,6 +154,10 @@ export async function registerForEvent(req, res) {
     const existing = await Ticket.findOne({ eventId, attendeeEmail: email })
     if (existing) {
       if (existing.status === 'confirmed' || existing.status === 'checked-in') {
+        const eventForRsvp = await Event.findById(eventId)
+        if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, existing)) {
+          await eventForRsvp.save()
+        }
         return sendSuccess(res, 'A ticket for this email already exists', {
           ticket: toClientTicket(existing), paymentRequired: false, redirect: null,
         })
@@ -159,6 +168,10 @@ export async function registerForEvent(req, res) {
           existing.status = 'confirmed'
           existing.attendeeName = existing.attendeeName || name
           await existing.save()
+          const eventForRsvp = await Event.findById(eventId)
+          if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, existing)) {
+            await eventForRsvp.save()
+          }
           sendTicketEmail(existing, event).catch(console.error)
           return sendSuccess(res, 'Your ticket has been confirmed.', {
             ticket: toClientTicket(existing), paymentRequired: false, redirect: null,
@@ -181,6 +194,10 @@ export async function registerForEvent(req, res) {
         eventId, attendeeName: name, attendeeEmail: email,
         ticketType, price: 0, status: 'confirmed',
       })
+      const eventForRsvp = await Event.findById(eventId)
+      if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, ticket)) {
+        await eventForRsvp.save()
+      }
       sendTicketEmail(ticket, event).catch(console.error)
       return sendSuccess(res, 'Registered! Check your email for your ticket.', {
         ticket: toClientTicket(ticket), paymentRequired: false, redirect: null,
@@ -258,7 +275,12 @@ export async function verifyPaystackPayment(req, res) {
     await ticket.save()
 
     const event = await Event.findById(ticket.eventId)
-    if (event) sendTicketEmail(ticket, event).catch(console.error)
+    if (event) {
+      if (syncRsvpFromTicket(event, ticket)) {
+        await event.save()
+      }
+      sendTicketEmail(ticket, event).catch(console.error)
+    }
 
     return sendSuccess(res, 'Payment verified. Check your email for your ticket.', {
       ticket: toClientTicket(ticket),
@@ -295,7 +317,7 @@ export async function verifyTicket(req, res) {
 
     if (!ticket) return sendError(res, 404, 'Ticket not found', { valid: false })
 
-    const event = await Event.findOne({ _id: ticket.eventId, organizerId: req.user.userId })
+    const event = await findAccessibleEvent(ticket.eventId, req.user)
     if (!event)  return sendError(res, 403, 'Not your event', { valid: false })
 
     if (ticket.status === 'pending')     return sendError(res, 400, 'Payment not completed', { valid: false })
@@ -321,13 +343,31 @@ export async function verifyTicket(req, res) {
 export async function listEventTickets(req, res) {
   try {
     const { eventId } = req.params
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await findAccessibleEvent(eventId, req.user)
     if (!event) return sendError(res, 404, 'Event not found')
     const tickets = await Ticket.find({ eventId }).sort({ createdAt: -1 })
     return sendSuccess(res, 'Tickets loaded', { tickets: tickets.map(toClientTicket) })
   } catch (err) {
     return sendError(res, 500, 'Failed to load tickets')
   }
+}
+
+function getRequesterEmail(user) {
+  return String(user?.email || '').trim().toLowerCase()
+}
+
+async function findAccessibleEvent(eventId, user) {
+  const email = getRequesterEmail(user)
+  const query = {
+    _id: eventId,
+    $or: [{ organizerId: user.userId }],
+  }
+
+  if (email) {
+    query.$or.push({ 'coHosts.email': email })
+  }
+
+  return Event.findOne(query)
 }
 
 /* ══════════════════════════════════════

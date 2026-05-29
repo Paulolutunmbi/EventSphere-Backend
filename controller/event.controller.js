@@ -84,6 +84,26 @@ async function getHostProfile(userId) {
   return User.findById(userId).select('name email')
 }
 
+function getRequesterEmail(user) {
+  return String(user?.email || '').trim().toLowerCase()
+}
+
+async function findAccessibleEvent(eventId, user) {
+  const email = getRequesterEmail(user)
+  const query = {
+    _id: eventId,
+    $or: [
+      { organizerId: user.userId },
+    ],
+  }
+
+  if (email) {
+    query.$or.push({ 'coHosts.email': email })
+  }
+
+  return Event.findOne(query)
+}
+
 export async function createEvent(req, res) {
   try {
     const payload = buildEventPayload(req.body)
@@ -107,9 +127,21 @@ export async function createEvent(req, res) {
 
 export async function listEvents(req, res) {
   try {
-    const host = await getHostProfile(req.user.userId)
-    const events = await Event.find({ organizerId: req.user.userId }).sort({ createdAt: -1 })
-    return sendSuccess(res, 'Events loaded', { events: events.map(event => toClientEventWithHost(event, host)) })
+    const email = getRequesterEmail(req.user)
+    const events = await Event.find({
+      $or: [
+        { organizerId: req.user.userId },
+        ...(email ? [{ 'coHosts.email': email }] : []),
+      ],
+    }).sort({ createdAt: -1 })
+
+    const hostIds = [...new Set(events.map(event => String(event.organizerId)).filter(Boolean))]
+    const hosts = await User.find({ _id: { $in: hostIds } }).select('name email')
+    const hostMap = new Map(hosts.map(host => [String(host._id), host]))
+
+    return sendSuccess(res, 'Events loaded', {
+      events: events.map(event => toClientEventWithHost(event, hostMap.get(String(event.organizerId)))),
+    })
   } catch (error) {
     console.error('List events error:', error)
     return sendError(res, 500, 'Failed to load events')
@@ -136,13 +168,13 @@ export async function listPublicEvents(req, res) {
 export async function getEvent(req, res) {
   try {
     const { eventId } = req.params
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await findAccessibleEvent(eventId, req.user)
 
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
 
-    const host = await getHostProfile(req.user.userId)
+    const host = await getHostProfile(event.organizerId)
     return sendSuccess(res, 'Event loaded', { event: toClientEventWithHost(event, host) })
   } catch (error) {
     console.error('Get event error:', error)
@@ -154,9 +186,16 @@ export async function updateEventVisibility(req, res) {
   try {
     const { eventId } = req.params
     const nextIsPublic = Boolean(req.body?.isPublic)
+    const email = getRequesterEmail(req.user)
 
     const event = await Event.findOneAndUpdate(
-      { _id: eventId, organizerId: req.user.userId },
+      {
+        _id: eventId,
+        $or: [
+          { organizerId: req.user.userId },
+          ...(email ? [{ 'coHosts.email': email }] : []),
+        ],
+      },
       { isPublic: nextIsPublic },
       { new: true }
     )
@@ -176,6 +215,7 @@ export async function updateEventVisibility(req, res) {
 export async function updateEvent(req, res) {
   try {
     const { eventId } = req.params
+    const email = getRequesterEmail(req.user)
     const allowed = {
       title: req.body?.title,
       description: req.body?.description,
@@ -192,7 +232,13 @@ export async function updateEvent(req, res) {
     Object.keys(allowed).forEach(key => allowed[key] === undefined && delete allowed[key])
 
     const event = await Event.findOneAndUpdate(
-      { _id: eventId, organizerId: req.user.userId },
+      {
+        _id: eventId,
+        $or: [
+          { organizerId: req.user.userId },
+          ...(email ? [{ 'coHosts.email': email }] : []),
+        ],
+      },
       allowed,
       { new: true }
     )
@@ -225,7 +271,7 @@ export async function sendInvitations(req, res) {
       return sendError(res, 400, 'Please provide at least one guest email')
     }
 
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await findAccessibleEvent(eventId, req.user)
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
@@ -311,7 +357,7 @@ export async function submitRsvp(req, res) {
 export async function getEventAdminStats(req, res) {
   try {
     const { eventId } = req.params
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await findAccessibleEvent(eventId, req.user)
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
@@ -419,7 +465,7 @@ export async function addHost(req, res) {
       return sendError(res, 400, 'Host name and email are required')
     }
 
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await findAccessibleEvent(eventId, req.user)
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
