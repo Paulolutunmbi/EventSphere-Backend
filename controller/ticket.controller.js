@@ -7,31 +7,36 @@ import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTrans
 import { sendError, sendSuccess } from '../utils/response.js'
 
 /* ── send ticket email with QR ── */
-/* ── send ticket email with QR (Fixed using CID) ── */
+/* ── send ticket email with QR ── */
 async function sendTicketEmail(ticket, event) {
   const ticketUrl = buildTicketUrl(ticket.ticketId)
   
-  // 1. Generate a Buffer instead of a Data URL
+  // 1. Generate the raw QR code buffer image
   const qrBuffer = await QRCode.toBuffer(ticketUrl, {
     width: 400,
     margin: 2,
     color: { dark: '#0a0a0a', light: '#ffffff' },
   })
 
-  // 2. Pass a static CID string to your template instead of the huge base64 string
-  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl: 'cid:ticketqrcode' })
-  
+  // 2. Pass 'cid:ticketqrcode' to the template function explicitly
+  const template = ticketEmailTemplate({ 
+    event, 
+    ticket, 
+    ticketUrl, 
+    qrDataUrl: 'cid:ticketqrcode' 
+  })
+
+  // 3. Send email and physically attach the buffer file linked to that cid
   await sendEmail({
     to: ticket.attendeeEmail,
     subject: template.subject,
     html: template.html,
-    text: template.text,
-    // 3. Add the attachments array for Nodemailer (or your email service provider)
+    text: template.text || `Your ticket for ${event.title}. Open here: ${ticketUrl}`,
     attachments: [
       {
         filename: 'qrcode.png',
         content: qrBuffer,
-        cid: 'ticketqrcode' // This must match the string inside your template's img src
+        cid: 'ticketqrcode' // Must match the string layout in qrDataUrl precisely
       }
     ]
   })

@@ -2,6 +2,8 @@ import Event from '../model/event.model.js'
 import User from '../model/user.model.js'
 import Ticket from '../model/ticket.model.js'
 import Award from '../model/award.model.js'
+import Contestant from '../model/contestant.model.js'
+import Vote from '../model/vote.model.js'
 import { sendEmail } from '../services/emailService.js'
 import { invitationEmailTemplate } from '../services/emailTemplates.js'
 import { sendError, sendSuccess } from '../utils/response.js'
@@ -111,6 +113,23 @@ export async function listEvents(req, res) {
   } catch (error) {
     console.error('List events error:', error)
     return sendError(res, 500, 'Failed to load events')
+  }
+}
+
+export async function listPublicEvents(req, res) {
+  try {
+    const events = await Event.find({ isPublic: true }).sort({ createdAt: -1 })
+
+    const hostIds = [...new Set(events.map(event => String(event.organizerId)).filter(Boolean))]
+    const hosts = await User.find({ _id: { $in: hostIds } }).select('name email')
+    const hostMap = new Map(hosts.map(host => [String(host._id), host]))
+
+    return sendSuccess(res, 'Public events loaded', {
+      events: events.map(event => toClientEventWithHost(event, hostMap.get(String(event.organizerId))))
+    })
+  } catch (error) {
+    console.error('List public events error:', error)
+    return sendError(res, 500, 'Failed to load public events')
   }
 }
 
@@ -418,5 +437,29 @@ export async function addHost(req, res) {
   } catch (error) {
     console.error('Add host error:', error)
     return sendError(res, 500, 'Failed to add host')
+  }
+}
+
+export async function deleteEvent(req, res) {
+  try {
+    const { eventId } = req.params
+
+    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    if (!event) {
+      return sendError(res, 404, 'Event not found')
+    }
+
+    await Promise.all([
+      Ticket.deleteMany({ eventId }),
+      Vote.deleteMany({ eventId }),
+      Contestant.deleteMany({ eventId }),
+      Award.deleteMany({ eventId }),
+      Event.deleteOne({ _id: eventId, organizerId: req.user.userId }),
+    ])
+
+    return sendSuccess(res, 'Event deleted successfully')
+  } catch (error) {
+    console.error('Delete event error:', error)
+    return sendError(res, 500, 'Failed to delete event')
   }
 }
