@@ -478,8 +478,31 @@ export async function addHost(req, res) {
     event.coHosts.push({ name, email, role, addedAt: new Date() })
     await event.save()
 
+    // send co-host notification email (best-effort) and report status
+    let emailSent = false
+    try {
+      const inviter = await getHostProfile(req.user.userId)
+      const invitationLink = `${process.env.PUBLIC_APP_URL || 'http://localhost:5174'}/events/${event._id}/admin`
+      const template = invitationEmailTemplate({
+        eventTitle: event.title,
+        hostName: inviter?.name || '',
+        hostEmail: inviter?.email || '',
+        invitationLink,
+      })
+      await sendEmail({
+        to: email,
+        subject: `You've been added as a co-host — ${event.title}`,
+        text: template.text,
+        html: template.html,
+      })
+      emailSent = true
+    } catch (emailErr) {
+      console.error('Failed to send co-host invitation email:', emailErr)
+      emailSent = false
+    }
+
     const host = await getHostProfile(req.user.userId)
-    return sendSuccess(res, 'Host added', { event: toClientEventWithHost(event, host) })
+    return sendSuccess(res, 'Host added', { event: toClientEventWithHost(event, host), emailSent }, 201)
   } catch (error) {
     console.error('Add host error:', error)
     return sendError(res, 500, 'Failed to add host')
