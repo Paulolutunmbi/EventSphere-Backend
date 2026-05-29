@@ -48,6 +48,35 @@ const ticketSchema = new mongoose.Schema(
       type:    String,
       default: '',
     },
+    transactionReference: {
+      type: String,
+      default: '',
+    },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'successful', 'failed'],
+      default: 'pending',
+    },
+    amountPaid: {
+      type: Number,
+      default: 0,
+    },
+    paystackStatus: {
+      type: String,
+      default: '',
+    },
+    paystackPayload: {
+      type: Object,
+      default: null,
+    },
+    qrCodeText: {
+      type: String,
+      default: '',
+    },
+    qrCodeData: {
+      type: String,
+      default: '',
+    },
     checkedInAt: {
       type:    Date,
       default: null,

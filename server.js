@@ -6,6 +6,7 @@ import authRoutes from './routes/Auth.route.js'
 import eventRoutes from './routes/Event.route.js'
 import ticketRoutes from './routes/Ticket.route.js'
 import awardRoutes from './routes/Award.route.js'
+import nomineeRoutes from './routes/Nominee.route.js'
 
 const app = express()
 
@@ -64,6 +65,7 @@ app.use('/api/auth', authRoutes)
 app.use('/api/events', eventRoutes)
 app.use('/api/tickets', ticketRoutes)
 app.use('/api/awards', awardRoutes)
+app.use('/api/nominees', nomineeRoutes)
 
 // fallback — shows all registered routes if a path isn't found
 app.use((req, res) => {

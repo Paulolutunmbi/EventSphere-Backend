@@ -30,12 +30,19 @@ export function invitationEmailTemplate({ eventTitle, hostName, hostEmail, invit
   }
 }
 
-export function ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl }) {
+export function ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl, payment }) {
+  const amountNaira = Number(payment?.amountPaid || 0) / 100
+  const amountLabel = amountNaira > 0 ? `₦${amountNaira.toLocaleString()}` : 'Free'
+  const reference = payment?.reference || ticket.paymentReference || ''
+
   return {
-    subject: `Your ticket for ${event.title} ✦`,
-    text: `Your ticket for ${event.title} is attached as a QR code.
+    subject: 'Your Ticket & QR Code Receipt',
+    text: `Your ticket for ${event.title} is ready.
 
 Ticket ID: ${ticket.ticketId}
+Transaction Reference: ${reference || 'N/A'}
+Amount Paid: ${amountLabel}
+
 Open your ticket: ${ticketUrl}
 
 Show the attached QR code at the entrance. One-time use only.`,
@@ -52,7 +59,13 @@ Show the attached QR code at the entrance. One-time use only.`,
           <img src="${qrDataUrl}" alt="QR code" style="width:200px;height:200px;border-radius:12px;border:4px solid #2a2a32" />
           <p style="margin:16px 0 0;font-size:11px;color:#3d3d4a;font-family:monospace;letter-spacing:.1em">${ticket.ticketId}</p>
           <p style="margin:10px 0 0;font-size:12px;color:#6b6b76">Open your ticket: <a href="${ticketUrl}" style="color:#a78bfa;text-decoration:none">${ticketUrl}</a></p>
-          <p style="margin:10px 0 0;font-size:12px;color:#8a8a96">Your QR code is attached as a file for easy access.</p>
+          <p style="margin:14px 0 0">
+            <a href="${ticketUrl}" style="display:inline-block;padding:10px 16px;border-radius:999px;background:#a78bfa;color:#15151d;text-decoration:none;font-weight:700;font-size:12px">
+              Download ticket
+            </a>
+          </p>
+          <p style="margin:10px 0 0;font-size:12px;color:#8a8a96">Transaction reference: ${reference || 'N/A'} · Amount: ${amountLabel}</p>
+          <p style="margin:10px 0 0;font-size:12px;color:#8a8a96">Download your ticket using the link above or the attached QR image.</p>
         </div>
         <div style="padding:20px 32px;border-top:1px solid rgba(255,255,255,0.07);text-align:center;color:#3d3d4a;font-size:12px">
           Show this QR code at the entrance. One-time use only.

@@ -8,6 +8,12 @@ const eventSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    createdByAdminId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
     title: {
       type: String,
       required: true,
@@ -60,6 +66,11 @@ const eventSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    votingRules: {
+      type: String,
+      default: '',
+      trim: true,
+    },
     capacity: {
       type: String,
       default: 'Unlimited',
@@ -74,6 +85,12 @@ const eventSchema = new mongoose.Schema(
       type: String,
       default: '',
       trim: true,
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active',
+      index: true,
     },
     invitedGuests: {
       type: [

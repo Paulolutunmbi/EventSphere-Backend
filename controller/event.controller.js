@@ -21,9 +21,11 @@ function buildEventPayload(body = {}) {
     ticketPrice: body.ticketPrice ?? 'Free',
     ticketPrices: body.ticketPrices ?? null,
     requireApproval: body.requireApproval ?? false,
+    votingRules: body.votingRules || '',
     capacity: body.capacity ?? 'Unlimited',
     theme: body.theme || 'minimal',
     coverImage: body.coverImage || '',
+    status: body.status || 'active',
   }
 }
 
@@ -35,6 +37,7 @@ function toClientEventWithHost(event, host) {
   return {
     id: event._id,
     organizerId: event.organizerId,
+    createdByAdminId: event.createdByAdminId,
     title: event.title,
     description: event.description,
     startDate: event.startDate,
@@ -45,9 +48,11 @@ function toClientEventWithHost(event, host) {
     isPublic: event.isPublic,
     ticketPrice: event.ticketPrice,
     requireApproval: event.requireApproval,
+    votingRules: event.votingRules || '',
     capacity: event.capacity,
     theme: event.theme,
     coverImage: event.coverImage,
+    status: event.status || 'active',
     ticketPrices: event.ticketPrices || null,
     invitedGuests: Array.isArray(event.invitedGuests) ? event.invitedGuests.map(guest => ({
       email: guest.email,
@@ -115,6 +120,7 @@ export async function createEvent(req, res) {
     const event = await Event.create({
       ...payload,
       organizerId: req.user.userId,
+      createdByAdminId: req.user.userId,
     })
     const host = await getHostProfile(req.user.userId)
 
@@ -186,23 +192,19 @@ export async function updateEventVisibility(req, res) {
   try {
     const { eventId } = req.params
     const nextIsPublic = Boolean(req.body?.isPublic)
-    const email = getRequesterEmail(req.user)
 
-    const event = await Event.findOneAndUpdate(
-      {
-        _id: eventId,
-        $or: [
-          { organizerId: req.user.userId },
-          ...(email ? [{ 'coHosts.email': email }] : []),
-        ],
-      },
-      { isPublic: nextIsPublic },
-      { new: true }
-    )
+    const event = await Event.findById(eventId)
 
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
+
+    if (!isEventOwner(event, req.user)) {
+      return sendError(res, 403, 'Access denied')
+    }
+
+    event.isPublic = nextIsPublic
+    await event.save()
 
     const host = await getHostProfile(req.user.userId)
     return sendSuccess(res, 'Event visibility updated', { event: toClientEventWithHost(event, host) })
@@ -215,7 +217,16 @@ export async function updateEventVisibility(req, res) {
 export async function updateEvent(req, res) {
   try {
     const { eventId } = req.params
-    const email = getRequesterEmail(req.user)
+    const event = await Event.findById(eventId)
+
+    if (!event) {
+      return sendError(res, 404, 'Event not found')
+    }
+
+    if (!isEventOwner(event, req.user)) {
+      return sendError(res, 403, 'Access denied')
+    }
+
     const allowed = {
       title: req.body?.title,
       description: req.body?.description,
@@ -227,25 +238,30 @@ export async function updateEvent(req, res) {
       ticketPrices: req.body?.ticketPrices,
       coverImage: req.body?.coverImage,
       isPublic: req.body?.isPublic,
+      requireApproval: req.body?.requireApproval,
+      votingRules: req.body?.votingRules,
+      status: req.body?.status,
     }
 
     Object.keys(allowed).forEach(key => allowed[key] === undefined && delete allowed[key])
 
-    const event = await Event.findOneAndUpdate(
-      {
-        _id: eventId,
-        $or: [
-          { organizerId: req.user.userId },
-          ...(email ? [{ 'coHosts.email': email }] : []),
-        ],
-      },
-      allowed,
-      { new: true }
-    )
-
-    if (!event) {
-      return sendError(res, 404, 'Event not found')
+    if (allowed.title !== undefined && !String(allowed.title || '').trim()) {
+      return sendError(res, 400, 'Event title is required')
     }
+
+    if (allowed.status !== undefined && !['active', 'inactive'].includes(String(allowed.status))) {
+      return sendError(res, 400, 'Invalid event status')
+    }
+
+    if (event.status === 'inactive') {
+      const updates = Object.keys(allowed).filter(key => allowed[key] !== undefined && key !== 'status')
+      if (updates.length > 0) {
+        return sendError(res, 409, 'Event is inactive')
+      }
+    }
+
+    Object.assign(event, allowed)
+    await event.save()
 
     const host = await getHostProfile(req.user.userId)
     return sendSuccess(res, 'Event updated', { event: toClientEventWithHost(event, host) })
@@ -362,9 +378,10 @@ export async function getEventAdminStats(req, res) {
       return sendError(res, 404, 'Event not found')
     }
 
-    const [tickets, awards] = await Promise.all([
+    const [tickets, awards, contestants] = await Promise.all([
       Ticket.find({ eventId }).sort({ createdAt: -1 }),
       Award.find({ eventId }).sort({ createdAt: -1 }),
+      Contestant.find({ eventId }).sort({ createdAt: -1 }),
     ])
 
     const paidTickets = tickets.filter(ticket => ticket.status === 'confirmed' && Number(ticket.price || 0) > 0)
@@ -425,10 +442,10 @@ export async function getEventAdminStats(req, res) {
         description: award.description,
         nominees: Array.isArray(award.nominees)
           ? award.nominees.map(nominee => ({
-              name: nominee,
+              name: typeof nominee === 'string' ? nominee : (nominee?.name || ''),
               voteCount: Array.isArray(award.votes)
                 ? award.votes.reduce(
-                    (total, vote) => total + (String(vote.nominee || '').toLowerCase() === String(nominee).toLowerCase()
+                    (total, vote) => total + (String(vote.nominee || '').toLowerCase() === String(typeof nominee === 'string' ? nominee : nominee?.name || '').toLowerCase()
                       ? Math.max(1, Number(vote.quantity || 1))
                       : 0),
                     0
@@ -446,6 +463,22 @@ export async function getEventAdminStats(req, res) {
           createdAt: vote.createdAt,
         })) : [],
         createdAt: award.createdAt,
+      })),
+      nominees: contestants.map(contestant => ({
+        id: contestant._id,
+        eventId: contestant.eventId,
+        awardId: contestant.awardId,
+        name: contestant.name,
+        description: contestant.description || '',
+        imageUrl: contestant.imageUrl || '',
+        category: contestant.category || '',
+        voteMetadata: contestant.voteMetadata ?? null,
+        slug: contestant.slug,
+        isActive: contestant.isActive,
+        voteCount: contestant.voteCount,
+        voterCount: contestant.voterCount,
+        createdByAdminId: contestant.createdByAdminId,
+        updatedAt: contestant.updatedAt,
       })),
     })
   } catch (error) {
@@ -513,7 +546,7 @@ export async function deleteEvent(req, res) {
   try {
     const { eventId } = req.params
 
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await Event.findOne({ _id: eventId, createdByAdminId: req.user.userId })
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
@@ -531,4 +564,8 @@ export async function deleteEvent(req, res) {
     console.error('Delete event error:', error)
     return sendError(res, 500, 'Failed to delete event')
   }
+}
+
+function isEventOwner(event, user) {
+  return String(event?.createdByAdminId || '') === String(user?.userId || '')
 }

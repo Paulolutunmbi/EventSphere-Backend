@@ -45,7 +45,7 @@ function getVoterCount(award) {
   ).size
 }
 
-function normalizeNominees(input) {
+function normalizeNominees(input, { createdByAdminId } = {}) {
   const slugifyValue = value => String(value || '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -60,6 +60,23 @@ function normalizeNominees(input) {
       return String(value.name.name || value.name.label || value.name.value || '').trim()
     }
     return String(value.nominee || value.label || value.value || value.title || value.text || value.fullName || '').trim()
+  }
+
+  const extractDescription = value => {
+    if (!value || typeof value !== 'object') return ''
+    if (typeof value.description === 'string' || typeof value.description === 'number') return String(value.description).trim()
+    return ''
+  }
+
+  const extractCategory = value => {
+    if (!value || typeof value !== 'object') return ''
+    if (typeof value.category === 'string' || typeof value.category === 'number') return String(value.category).trim()
+    return ''
+  }
+
+  const extractVoteMetadata = value => {
+    if (!value || typeof value !== 'object') return null
+    return value.voteMetadata ?? null
   }
 
   const extractImageUrl = value => {
@@ -82,6 +99,10 @@ function normalizeNominees(input) {
         name,
         imageUrl: extractImageUrl(v),
         slug: typeof v === 'object' && v.slug ? String(v.slug).trim() : slugifyValue(name),
+        description: extractDescription(v),
+        category: extractCategory(v),
+        voteMetadata: extractVoteMetadata(v),
+        createdByAdminId: v?.createdByAdminId || createdByAdminId || undefined,
       }
     })
     .filter(Boolean)
@@ -96,7 +117,7 @@ function slugify(value) {
     .replace(/^-+|-+$/g, '')
 }
 
-async function syncContestantsForAward(award, eventId) {
+export async function syncContestantsForAward(award, eventId) {
   const nominees = Array.isArray(award.nominees) ? award.nominees : []
   const activeSlugs = new Set()
   const contestants = []
@@ -118,6 +139,13 @@ async function syncContestantsForAward(award, eventId) {
         awardId: award._id,
         name,
         slug,
+        description: typeof nominee === 'object' ? String(nominee.description || '').trim() : '',
+        imageUrl: typeof nominee === 'object' ? String(nominee.imageUrl || nominee.image || nominee.photo || nominee.picture || nominee.avatar || '').trim() : '',
+        category: typeof nominee === 'object' ? String(nominee.category || '').trim() : '',
+        voteMetadata: typeof nominee === 'object' ? (nominee.voteMetadata ?? null) : null,
+        createdByAdminId: typeof nominee === 'object'
+          ? (nominee.createdByAdminId || award.createdByAdminId)
+          : award.createdByAdminId,
         isActive: true,
       },
       { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -244,6 +272,10 @@ export async function initializeVotePayment(req, res) {
       return sendError(res, 400, 'Please select a valid nominee')
     }
 
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      return sendError(res, 500, 'Payment system not configured. Please contact support.')
+    }
+
     const totalKobo = quantity * VOTE_UNIT_AMOUNT
     const appUrl    = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
 
@@ -355,7 +387,8 @@ export async function createAward(req, res) {
     const { eventId }   = req.params
     const title         = String(req.body?.title       || '').trim()
     const description   = String(req.body?.description || '').trim()
-    const nominees      = normalizeNominees(req.body?.nominees)
+    const requesterId   = String(req.user?.userId || '')
+    const nominees      = normalizeNominees(req.body?.nominees, { createdByAdminId: requesterId })
 
     if (!title)              return sendError(res, 400, 'Award title is required')
     if (!nominees.length)    return sendError(res, 400, 'Add at least one nominee')
@@ -364,13 +397,12 @@ export async function createAward(req, res) {
     if (!event) return sendError(res, 404, 'Event not found')
 
     // authorization: allow organizer or listed co-hosts (by email)
-    const requesterId = String(req.user?.userId || '')
     const requesterEmail = String(req.user?.email || '').trim().toLowerCase()
     const isOrganizer = requesterId && String(event.organizerId) === requesterId
     const isCoHost = requesterEmail && Array.isArray(event.coHosts) && event.coHosts.some(h => String(h.email || '').toLowerCase() === requesterEmail)
     if (!isOrganizer && !isCoHost) return sendError(res, 403, 'Not authorized to update this award')
 
-    const award = await Award.create({ eventId, title, description, nominees })
+    const award = await Award.create({ eventId, title, description, nominees, createdByAdminId: requesterId })
     await syncContestantsForAward(award, eventId)
     return sendSuccess(res, 'Award created', { award: toAdminAward(award) }, 201)
   } catch (error) {
@@ -418,6 +450,10 @@ export async function voteAward(req, res) {
       )
     if (alreadyRecorded) {
       return sendSuccess(res, 'Vote payment already verified', { award: toPublicAward(award) })
+    }
+
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      return sendError(res, 500, 'Payment system not configured. Please contact support.')
     }
 
     // verify with Paystack
@@ -491,6 +527,8 @@ export async function voteAward(req, res) {
       quantity,
       amountPaid: paidAmount,
       paymentReference: reference,
+      transactionReference: payload.data?.reference || reference,
+      paymentStatus: payload.data?.status === 'success' ? 'successful' : payload.data?.status || 'failed',
       paystackStatus: payload.data?.status || 'success',
       paystackPayload: payload.data,
     })

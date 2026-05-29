@@ -14,10 +14,35 @@ const contestantSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    createdByAdminId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
     name: {
       type: String,
       required: true,
       trim: true,
+    },
+    description: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    imageUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    category: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    voteMetadata: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
     },
     slug: {
       type: String,

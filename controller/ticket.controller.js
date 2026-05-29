@@ -7,20 +7,24 @@ import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTrans
 import { sendError, sendSuccess } from '../utils/response.js'
 
 /* ── send ticket email with QR ── */
-async function sendTicketEmail(ticket, event) {
+async function sendTicketEmail(ticket, event, { qrDataUrl, qrBuffer } = {}) {
   const ticketUrl = buildTicketUrl(ticket.ticketId)
-  const qrDataUrl = await QRCode.toDataURL(ticketUrl, {
-    width: 400,
-    margin: 2,
-    color: { dark: '#0a0a0a', light: '#ffffff' },
-  })
-  const qrBuffer = await QRCode.toBuffer(ticketUrl, {
-    width: 400,
-    margin: 2,
-    color: { dark: '#0a0a0a', light: '#ffffff' },
-  })
+  const qrPayload = ticket.qrCodeText || buildTicketQrText(ticket)
+  const qrAssets = qrDataUrl && qrBuffer
+    ? { qrDataUrl, qrBuffer }
+    : await generateQrAssets(qrPayload)
 
-  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl })
+  const template = ticketEmailTemplate({
+    event,
+    ticket,
+    ticketUrl,
+    qrDataUrl: qrAssets.qrDataUrl,
+    payment: {
+      reference: ticket.transactionReference || ticket.paymentReference,
+      amountPaid: ticket.amountPaid || 0,
+      status: ticket.paymentStatus || 'pending',
+    },
+  })
   await sendEmail({
     to: ticket.attendeeEmail,
     subject: template.subject,
@@ -28,11 +32,60 @@ async function sendTicketEmail(ticket, event) {
     text: template.text,
     attachments: [
       {
-        filename: `ticket-${ticket.ticketId}-qr.png`,
-        content: qrBuffer,
+        filename: `ticket-${ticket.ticketId}.png`,
+        content: qrAssets.qrBuffer,
       },
     ],
   })
+}
+
+function buildTicketQrText(ticket) {
+  const baseUrl = buildTicketUrl(ticket.ticketId)
+  const params = new URLSearchParams({
+    email: ticket.attendeeEmail || '',
+    eventId: String(ticket.eventId || ''),
+    reference: ticket.transactionReference || ticket.paymentReference || '',
+  })
+
+  return `${baseUrl}?${params.toString()}`
+}
+
+async function generateQrAssets(text) {
+  const qrDataUrl = await QRCode.toDataURL(text, {
+    width: 400,
+    margin: 2,
+    color: { dark: '#0a0a0a', light: '#ffffff' },
+  })
+  const qrBuffer = await QRCode.toBuffer(text, {
+    width: 400,
+    margin: 2,
+    color: { dark: '#0a0a0a', light: '#ffffff' },
+  })
+
+  return { qrDataUrl, qrBuffer }
+}
+
+function decodeQrDataUrlToBuffer(dataUrl) {
+  const match = /^data:image\/png;base64,(.+)$/i.exec(String(dataUrl || ''))
+  if (!match) return null
+  return Buffer.from(match[1], 'base64')
+}
+
+async function ensureTicketQrAssets(ticket) {
+  if (ticket.qrCodeData && ticket.qrCodeText) {
+    return {
+      qrDataUrl: ticket.qrCodeData,
+      qrBuffer: decodeQrDataUrlToBuffer(ticket.qrCodeData) || (await generateQrAssets(ticket.qrCodeText)).qrBuffer,
+      qrText: ticket.qrCodeText,
+    }
+  }
+
+  const qrText = buildTicketQrText(ticket)
+  const assets = await generateQrAssets(qrText)
+  ticket.qrCodeText = qrText
+  ticket.qrCodeData = assets.qrDataUrl
+
+  return { ...assets, qrText }
 }
 
 function syncRsvpFromTicket(event, ticket) {
@@ -64,11 +117,13 @@ export async function getTicketQr(req, res) {
     const ticket = await Ticket.findOne({ ticketId })
     if (!ticket) return sendError(res, 404, 'Ticket not found')
 
-    const ticketUrl = buildTicketUrl(ticket.ticketId)
-    const buffer = await QRCode.toBuffer(ticketUrl, { width: 400, margin: 2, color: { dark: '#0a0a0a', light: '#ffffff' } })
+    const qrAssets = await ensureTicketQrAssets(ticket)
+    if (!ticket.qrCodeData) {
+      await ticket.save()
+    }
 
     res.setHeader('Content-Type', 'image/png')
-    return res.send(buffer)
+    return res.send(qrAssets.qrBuffer)
   } catch (err) {
     console.error('Get ticket QR error:', err)
     return sendError(res, 500, 'Failed to generate QR')
@@ -119,6 +174,10 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType,
     ],
   }
 
+  if (!process.env.PAYSTACK_SECRET_KEY) {
+    throw new Error('Payment system not configured. Please contact support.')
+  }
+
   const { authorizationUrl, reference } = await initializePaystackPayment({
     email,
     amount: totalAmountInKobo,
@@ -158,8 +217,8 @@ export async function registerForEvent(req, res) {
     if (!name) return sendError(res, 400, 'Could not derive a name from the email provided')
 
     const isFree = isFreeTicketPrice(event.ticketPrice)
-      const donationInput = Number(req.body?.donation || 0)
-      const donationNaira = Number.isFinite(donationInput) && donationInput > 0 ? donationInput : 0
+    const donationInput = Number(req.body?.donation || 0)
+    const donationNaira = Number.isFinite(donationInput) && donationInput > 0 ? donationInput : 0
 
     /* ── duplicate check ── */
     const existing = await Ticket.findOne({ eventId, attendeeEmail: email })
@@ -178,18 +237,24 @@ export async function registerForEvent(req, res) {
         if (isFree) {
           existing.status = 'confirmed'
           existing.attendeeName = existing.attendeeName || name
+          existing.paymentStatus = 'successful'
+          existing.amountPaid = 0
+          const qrAssets = await ensureTicketQrAssets(existing)
           await existing.save()
           const eventForRsvp = await Event.findById(eventId)
           if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, existing)) {
             await eventForRsvp.save()
           }
-          sendTicketEmail(existing, event).catch(console.error)
+          sendTicketEmail(existing, event, qrAssets).catch(console.error)
           return sendSuccess(res, 'Your ticket has been confirmed.', {
             ticket: toClientTicket(existing), paymentRequired: false, redirect: null,
           })
         }
 
         // retry payment for existing pending ticket
+        if (!process.env.PAYSTACK_SECRET_KEY) {
+          return sendError(res, 500, 'Payment system not configured. Please contact support.')
+        }
         const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket: existing, event, ticketType, donationNaira })
         existing.paymentReference = reference
         await existing.save()
@@ -204,18 +269,25 @@ export async function registerForEvent(req, res) {
       const ticket = await Ticket.create({
         eventId, attendeeName: name, attendeeEmail: email,
         ticketType, price: 0, status: 'confirmed',
+        paymentStatus: 'successful',
+        amountPaid: 0,
       })
+      const qrAssets = await ensureTicketQrAssets(ticket)
+      await ticket.save()
       const eventForRsvp = await Event.findById(eventId)
       if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, ticket)) {
         await eventForRsvp.save()
       }
-      sendTicketEmail(ticket, event).catch(console.error)
+      sendTicketEmail(ticket, event, qrAssets).catch(console.error)
       return sendSuccess(res, 'Registered! Check your email for your ticket.', {
         ticket: toClientTicket(ticket), paymentRequired: false, redirect: null,
       }, 201)
     }
 
     /* ── PAID flow ── */
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      return sendError(res, 500, 'Payment system not configured. Please contact support.')
+    }
     const priceInKobo = getTicketBaseKobo(event, ticketType)
     const donationKobo = Math.max(0, Math.round(donationNaira * 100))
 
@@ -236,6 +308,9 @@ export async function registerForEvent(req, res) {
     }, 201)
   } catch (err) {
     console.error('Register error:', err)
+    if (String(err?.message || '').includes('Payment system not configured')) {
+      return sendError(res, 500, 'Payment system not configured. Please contact support.')
+    }
     return sendError(res, 500, 'Registration failed')
   }
 }
@@ -262,6 +337,10 @@ export async function verifyPaystackPayment(req, res) {
       return sendSuccess(res, 'Payment already verified', { ticket: toClientTicket(ticket), event })
     }
 
+    if (!process.env.PAYSTACK_SECRET_KEY) {
+      return sendError(res, 500, 'Payment system not configured. Please contact support.')
+    }
+
     // verify with Paystack
     const payload = await verifyPaystackTransaction(reference)
     if (payload.data?.status !== 'success') {
@@ -281,8 +360,15 @@ export async function verifyPaystackPayment(req, res) {
       return sendError(res, 400, 'Payment amount does not match expected total')
     }
 
-    ticket.status           = 'confirmed'
+    ticket.status = 'confirmed'
+    ticket.paymentStatus = 'successful'
     ticket.paymentReference = reference
+    ticket.transactionReference = payload.data?.reference || reference
+    ticket.amountPaid = paidAmount
+    ticket.paystackStatus = payload.data?.status || 'success'
+    ticket.paystackPayload = payload.data
+
+    const qrAssets = await ensureTicketQrAssets(ticket)
     await ticket.save()
 
     const event = await Event.findById(ticket.eventId)
@@ -290,7 +376,7 @@ export async function verifyPaystackPayment(req, res) {
       if (syncRsvpFromTicket(event, ticket)) {
         await event.save()
       }
-      sendTicketEmail(ticket, event).catch(console.error)
+      sendTicketEmail(ticket, event, qrAssets).catch(console.error)
     }
 
     return sendSuccess(res, 'Payment verified. Check your email for your ticket.', {
@@ -331,7 +417,9 @@ export async function verifyTicket(req, res) {
     const event = await findAccessibleEvent(ticket.eventId, req.user)
     if (!event)  return sendError(res, 403, 'Not your event', { valid: false })
 
-    if (ticket.status === 'pending')     return sendError(res, 400, 'Payment not completed', { valid: false })
+    if (ticket.status === 'pending' || (ticket.paymentStatus && ticket.paymentStatus !== 'successful')) {
+      return sendError(res, 400, 'Payment not completed', { valid: false })
+    }
     if (ticket.status === 'checked-in')  return sendError(res, 409, 'Ticket already used', { valid: false, checkedInAt: ticket.checkedInAt })
 
     ticket.status      = 'checked-in'
@@ -390,6 +478,10 @@ function toClientTicket(t) {
     attendeeName: t.attendeeName, attendeeEmail: t.attendeeEmail,
     ticketType: t.ticketType, price: t.price, status: t.status,
     paymentReference: t.paymentReference,
+    transactionReference: t.transactionReference,
+    paymentStatus: t.paymentStatus,
+    amountPaid: t.amountPaid,
+    qrCodeText: t.qrCodeText,
     checkedInAt: t.checkedInAt, createdAt: t.createdAt,
   }
 }

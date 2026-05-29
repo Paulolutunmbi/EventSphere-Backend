@@ -47,6 +47,15 @@ const voteSchema = new mongoose.Schema(
       trim: true,
       unique: true,
     },
+    transactionReference: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    paymentStatus: {
+      type: String,
+      default: 'successful',
+    },
     paystackStatus: {
       type: String,
       default: 'success',
