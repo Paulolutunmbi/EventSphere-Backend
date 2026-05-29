@@ -8,7 +8,6 @@ import { voteConfirmationTemplate } from '../services/emailTemplates.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
 const VOTE_UNIT_AMOUNT  = 5000   // kobo = ₦50 per vote
-const MIN_VOTE_QTY      = 2
 
 /* ══════════════════════════════════════
    HELPERS  (unchanged from your version)
@@ -99,6 +98,7 @@ function slugify(value) {
 
 async function syncContestantsForAward(award, eventId) {
   const nominees = Array.isArray(award.nominees) ? award.nominees : []
+  const activeSlugs = new Set()
   const contestants = []
 
   for (const nominee of nominees) {
@@ -110,6 +110,7 @@ async function syncContestantsForAward(award, eventId) {
     if (!name) continue
 
     const slug = slugify(name)
+    activeSlugs.add(slug)
     const contestant = await Contestant.findOneAndUpdate(
       { eventId, awardId: award._id, slug },
       {
@@ -123,6 +124,13 @@ async function syncContestantsForAward(award, eventId) {
     )
 
     contestants.push(contestant)
+  }
+
+  if (activeSlugs.size > 0) {
+    await Contestant.updateMany(
+      { eventId, awardId: award._id, slug: { $nin: [...activeSlugs] } },
+      { isActive: false }
+    )
   }
 
   return contestants
@@ -219,14 +227,11 @@ export async function initializeVotePayment(req, res) {
     const { eventId, awardId } = req.params
     const email    = String(req.body?.email    || '').trim().toLowerCase()
     const nominee  = String(req.body?.nominee  || '').trim()
-    const quantity = Number(req.body?.quantity || 0)
+    const quantity = Math.max(1, Number(req.body?.quantity || 1))
     const name     = normalizeName(String(req.body?.name || '').trim(), email)
 
     if (!email)   return sendError(res, 400, 'Email is required')
     if (!nominee) return sendError(res, 400, 'Nominee is required')
-    if (!Number.isFinite(quantity) || quantity < MIN_VOTE_QTY) {
-      return sendError(res, 400, 'Minimum vote is 2')
-    }
 
     const award = await Award.findOne({ _id: awardId, eventId })
     if (!award)  return sendError(res, 404, 'Award not found')
@@ -266,12 +271,16 @@ export async function initializeVotePayment(req, res) {
       ],
     }
 
+    // Lines ~155-162 in your award.controller.js
     const { authorizationUrl, reference } = await initializePaystackPayment({
       email,
       amount: totalKobo,
       currency: 'NGN',
       channels: ['card', 'bank_transfer', 'ussd', 'bank'],
+      
+      // RIGHT HERE! 👇 It is already implemented:
       callbackUrl: `${appUrl}/events/${eventId}/vote?awardId=${awardId}&reference={PAYSTACK_REFERENCE}`,
+      
       metadata,
     })
 
@@ -454,8 +463,8 @@ export async function voteAward(req, res) {
 
     if (!email) return sendError(res, 400, 'Email is required to record the vote')
     if (!name)  return sendError(res, 400, 'A valid name is required to record the vote')
-    if (!Number.isFinite(quantity) || quantity < MIN_VOTE_QTY) {
-      return sendError(res, 400, 'Minimum vote is 2')
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return sendError(res, 400, 'Invalid vote quantity')
     }
 
     // safety: paid amount must match quantity × unit price
@@ -560,8 +569,17 @@ export async function updateAward(req, res) {
     const description = typeof req.body?.description === 'string' ? String(req.body.description).trim() : undefined
     const nominees = req.body?.nominees ? normalizeNominees(req.body.nominees) : undefined
 
-    const event = await Event.findOne({ _id: eventId, organizerId: req.user.userId })
+    const event = await Event.findById(eventId)
     if (!event) return sendError(res, 404, 'Event not found')
+
+    const requesterId = String(req.user?.userId || '')
+    const requesterEmail = String(req.user?.email || '').trim().toLowerCase()
+    const isOrganizer = requesterId && String(event.organizerId) === requesterId
+    const isCoHost = requesterEmail && Array.isArray(event.coHosts) && event.coHosts.some(host => String(host.email || '').toLowerCase() === requesterEmail)
+
+    if (!isOrganizer && !isCoHost) {
+      return sendError(res, 403, 'Not authorized to update this award')
+    }
 
     const allowed = {}
     if (title !== undefined) allowed.title = title

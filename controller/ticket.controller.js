@@ -14,6 +14,11 @@ async function sendTicketEmail(ticket, event) {
     margin: 2,
     color: { dark: '#0a0a0a', light: '#ffffff' },
   })
+  const qrBuffer = await QRCode.toBuffer(ticketUrl, {
+    width: 400,
+    margin: 2,
+    color: { dark: '#0a0a0a', light: '#ffffff' },
+  })
 
   const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl })
   await sendEmail({
@@ -21,6 +26,12 @@ async function sendTicketEmail(ticket, event) {
     subject: template.subject,
     html: template.html,
     text: template.text,
+    attachments: [
+      {
+        filename: `ticket-${ticket.ticketId}-qr.png`,
+        content: qrBuffer,
+      },
+    ],
   })
 }
 

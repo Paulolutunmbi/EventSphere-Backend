@@ -33,6 +33,12 @@ export function invitationEmailTemplate({ eventTitle, hostName, hostEmail, invit
 export function ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl }) {
   return {
     subject: `Your ticket for ${event.title} ✦`,
+    text: `Your ticket for ${event.title} is attached as a QR code.
+
+Ticket ID: ${ticket.ticketId}
+Open your ticket: ${ticketUrl}
+
+Show the attached QR code at the entrance. One-time use only.`,
     html: `
       <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#14141a;color:#e8e8ec;border-radius:16px;overflow:hidden;">
         <div style="background:#1c1c24;padding:28px 32px;border-bottom:1px solid rgba(255,255,255,0.07)">
@@ -43,8 +49,10 @@ export function ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl }) {
         <div style="padding:28px 32px;text-align:center">
           <p style="margin:0 0 6px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#6b6b76">Your ticket</p>
           <p style="margin:0 0 24px;font-size:16px;font-weight:700;color:#f0f0f4">${ticket.attendeeName}</p>
-          <img src="${qrDataUrl}" alt="QR Code" width="220" height="220" />          <p style="margin:16px 0 0;font-size:11px;color:#3d3d4a;font-family:monospace;letter-spacing:.1em">${ticket.ticketId}</p>
+          <img src="${qrDataUrl}" alt="QR code" style="width:200px;height:200px;border-radius:12px;border:4px solid #2a2a32" />
+          <p style="margin:16px 0 0;font-size:11px;color:#3d3d4a;font-family:monospace;letter-spacing:.1em">${ticket.ticketId}</p>
           <p style="margin:10px 0 0;font-size:12px;color:#6b6b76">Open your ticket: <a href="${ticketUrl}" style="color:#a78bfa;text-decoration:none">${ticketUrl}</a></p>
+          <p style="margin:10px 0 0;font-size:12px;color:#8a8a96">Your QR code is attached as a file for easy access.</p>
         </div>
         <div style="padding:20px 32px;border-top:1px solid rgba(255,255,255,0.07);text-align:center;color:#3d3d4a;font-size:12px">
           Show this QR code at the entrance. One-time use only.

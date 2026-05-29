@@ -10,13 +10,18 @@ function getFromEmail() {
   return fromEmail
 }
 
-export async function sendEmail({ to, subject, html, text }) {
+export async function sendEmail({ to, subject, html, text, attachments = [] }) {
   if (!process.env.RESEND_API_KEY) {
     throw new Error('RESEND_API_KEY is missing')
   }
 
   const from = getFromEmail()
-  const { data, error } = await resend.emails.send({ from, to, subject, html, text })
+  const payload = { from, to, subject, html, text }
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    payload.attachments = attachments
+  }
+
+  const { data, error } = await resend.emails.send(payload)
 
   if (error) {
     throw new Error(error.message || 'Failed to send email')
