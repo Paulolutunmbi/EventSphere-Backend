@@ -8,6 +8,7 @@ import { voteConfirmationTemplate } from '../services/emailTemplates.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
 const VOTE_UNIT_AMOUNT  = 5000   // kobo = ₦50 per vote
+const MIN_VOTE_QTY      = 2
 
 /* ══════════════════════════════════════
    HELPERS  (unchanged from your version)
@@ -218,11 +219,14 @@ export async function initializeVotePayment(req, res) {
     const { eventId, awardId } = req.params
     const email    = String(req.body?.email    || '').trim().toLowerCase()
     const nominee  = String(req.body?.nominee  || '').trim()
-    const quantity = Math.max(1, Number(req.body?.quantity || 1))
+    const quantity = Number(req.body?.quantity || 0)
     const name     = normalizeName(String(req.body?.name || '').trim(), email)
 
     if (!email)   return sendError(res, 400, 'Email is required')
     if (!nominee) return sendError(res, 400, 'Nominee is required')
+    if (!Number.isFinite(quantity) || quantity < MIN_VOTE_QTY) {
+      return sendError(res, 400, 'Minimum vote is 2')
+    }
 
     const award = await Award.findOne({ _id: awardId, eventId })
     if (!award)  return sendError(res, 404, 'Award not found')
@@ -450,8 +454,8 @@ export async function voteAward(req, res) {
 
     if (!email) return sendError(res, 400, 'Email is required to record the vote')
     if (!name)  return sendError(res, 400, 'A valid name is required to record the vote')
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      return sendError(res, 400, 'Invalid vote quantity')
+    if (!Number.isFinite(quantity) || quantity < MIN_VOTE_QTY) {
+      return sendError(res, 400, 'Minimum vote is 2')
     }
 
     // safety: paid amount must match quantity × unit price
