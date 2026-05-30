@@ -1,4 +1,5 @@
 const PAYSTACK_BASE_URL = 'https://api.paystack.co'
+export const PAYSTACK_CALLBACK_URL = 'https://eventsnest.xyz/payment-success'
 
 function getPaystackSecretKey() {
   const key = process.env.PAYSTACK_SECRET_KEY
@@ -15,12 +16,12 @@ function buildHeaders() {
   }
 }
 
-export async function initializePaystackPayment({ email, amount, currency = 'NGN', callbackUrl, metadata, channels }) {
+export async function initializePaystackPayment({ email, amount, currency = 'NGN', metadata, channels }) {
   const body = {
     email,
     amount,
     currency,
-    callback_url: callbackUrl,
+    callback_url: PAYSTACK_CALLBACK_URL,
     metadata,
     channels,
   }
@@ -38,6 +39,7 @@ export async function initializePaystackPayment({ email, amount, currency = 'NGN
 
   return {
     authorizationUrl: payload.data.authorization_url,
+    authorization_url: payload.data.authorization_url,
     reference: payload.data.reference,
     accessCode: payload.data.access_code,
   }

@@ -1,5 +1,5 @@
 import express from 'express'
-import { handlePaystackWebhook } from '../controller/ticket.controller.js'
+import { handlePaystackWebhook, verifyPaystackReference } from '../controller/ticket.controller.js'
 
 const router = express.Router()
 
@@ -7,6 +7,6 @@ const router = express.Router()
 router.post('/paystack/webhook', handlePaystackWebhook)
 
 // POST /api/payments/paystack/verify
-router.post('/paystack/verify', handlePaystackWebhook)
+router.post('/paystack/verify', verifyPaystackReference)
 
 export default router

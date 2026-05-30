@@ -6,7 +6,7 @@ import Award from '../model/award.model.js'
 import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
 import { sendTicketPurchaseEmail, sendVoteConfirmationEmail } from '../services/email.service.js'
-import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
+import { initializePaystackPayment, PAYSTACK_CALLBACK_URL, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
 const EVENT_TICKET_FIELDS = 'title startDate startTime endDate endTime location ticketPrice ticketPrices organizerId rsvps coHosts'
@@ -89,7 +89,6 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType,
   const donationKobo = Math.max(0, Math.round(Number(donationNaira || 0) * 100))
   const feeInKobo = calculateTicketFee(priceInKobo)
   const totalAmountInKobo = priceInKobo + donationKobo + feeInKobo
-  const appUrl      = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
 
   const metadata = {
     platform: 'eventsnest',
@@ -120,13 +119,14 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType,
     email,
     amount: totalAmountInKobo,
     currency: 'NGN',
-    callbackUrl: `${appUrl}/payment-success?type=ticket&ticketId=${ticket.ticketId}&eventId=${event._id}&reference={PAYSTACK_REFERENCE}`,
+    callbackUrl: PAYSTACK_CALLBACK_URL,
     metadata,
     channels: ['card', 'bank_transfer', 'ussd', 'bank'],
   })
 
   return {
     authUrl: authorizationUrl,
+    authorization_url: authorizationUrl,
     reference,
     amount:    totalAmountInKobo,
     fee:       feeInKobo,
@@ -530,10 +530,17 @@ export async function handlePaystackWebhook(req, res) {
       }
     }
 
+    const incomingReference = String(
+      req.body?.reference ||
+      req.body?.trxref ||
+      req.body?.trxRef ||
+      req.body?.data?.reference ||
+      ''
+    ).trim()
     let payload = req.body
 
-    if (!payload?.data && req.body?.reference) {
-      payload = await verifyPaystackTransaction(String(req.body.reference || '').trim())
+    if (incomingReference) {
+      payload = await verifyPaystackTransaction(incomingReference)
     }
 
     const data = payload?.data
@@ -554,7 +561,7 @@ export async function handlePaystackWebhook(req, res) {
       return sendSuccess(res, 'Ticket payment verified', responseData)
     }
 
-    if (paymentType === 'voting' || paymentType === 'vote' || metadata.contestant_id || metadata.award_id) {
+    if (paymentType === 'vote' || metadata.contestant_id || metadata.award_id) {
       const result = await processVoteWebhook({ data, metadata })
       const responseData = isWebhook ? null : { type: 'vote', ...result }
       return sendSuccess(res, 'Vote payment recorded', responseData)
@@ -565,6 +572,10 @@ export async function handlePaystackWebhook(req, res) {
     console.error('Paystack webhook error:', err)
     return sendError(res, 500, 'Failed to process Paystack webhook')
   }
+}
+
+export async function verifyPaystackReference(req, res) {
+  return handlePaystackWebhook(req, res)
 }
 
 async function processTicketWebhook({ data, metadata, req }) {
@@ -597,7 +608,7 @@ async function processTicketWebhook({ data, metadata, req }) {
   ticket.paymentStatus = 'successful'
   ticket.paymentReference = data.reference || ticket.paymentReference
   ticket.transactionReference = data.reference || ticket.transactionReference
-  ticket.amountPaid = paidAmount
+  ticket.amountPaid = Math.max(0, Math.round(paidAmount / 100))
   ticket.paystackStatus = data.status || 'success'
   ticket.paystackPayload = data
 
@@ -706,21 +717,45 @@ async function processVoteWebhook({ data, metadata }) {
     throw new Error('Voter email and name are required')
   }
 
-  const vote = await Vote.create({
-    eventId,
-    awardId,
-    contestantId: contestant._id,
-    nomineeId: contestant._id,
-    voterName: name,
-    voterEmail: email,
-    quantity,
-    amountPaid: paidAmount,
-    paymentReference: reference,
-    transactionReference: data.reference || reference,
-    paymentStatus: data.status === 'success' ? 'successful' : data.status || 'failed',
-    paystackStatus: data.status || 'success',
-    paystackPayload: data,
-  })
+  let vote
+  try {
+    vote = await Vote.create({
+      eventId,
+      awardId,
+      contestantId: contestant._id,
+      nomineeId: contestant._id,
+      voterName: name,
+      voterEmail: email,
+      quantity,
+      amountPaid: paidAmount,
+      paymentReference: reference,
+      transactionReference: data.reference || reference,
+      paymentStatus: data.status === 'success' ? 'successful' : data.status || 'failed',
+      paystackStatus: data.status || 'success',
+      paystackPayload: data,
+    })
+  } catch (err) {
+    if (err?.code !== 11000) throw err
+
+    const duplicateVote = await Vote.findOne({ paymentReference: reference })
+      .select('contestantId quantity amountPaid eventId awardId')
+      .lean()
+    const duplicateContestant = duplicateVote
+      ? await Contestant.findById(duplicateVote.contestantId).select('name slug').lean()
+      : null
+
+    return {
+      voteId: duplicateVote?._id,
+      contestant: duplicateContestant
+        ? { id: duplicateContestant._id, name: duplicateContestant.name, slug: duplicateContestant.slug }
+        : null,
+      quantity: Number(duplicateVote?.quantity || 0),
+      amount: Number(duplicateVote?.amountPaid || 0),
+      paymentReference: reference,
+      eventId: String(duplicateVote?.eventId || eventId),
+      awardId: String(duplicateVote?.awardId || awardId),
+    }
+  }
 
   await Contestant.updateOne(
     { _id: contestant._id },

@@ -52,7 +52,7 @@ app.use(cors({
     return callback(new Error('Not allowed by CORS'), false)
   },
   methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-paystack-signature'],
   credentials: true // Optional: Add this if you ever plan to pass cookies/sessions
 }))
 
@@ -77,10 +77,9 @@ app.use('/api/payments', paystackRoutes)
 app.use('/api/system', systemRoutes)
 
 /*
-Expected Paystack URLs (Render example base):
-- Live Webhook URL: https://eventsphere-backend-swqw.onrender.com/api/payments/paystack/webhook
-- Live Callback URL (votes): https://your-frontend-host/events/:eventId/vote?awardId=:awardId&reference={PAYSTACK_REFERENCE}
-- Live Callback URL (tickets): https://your-frontend-host/tickets/:ticketId?reference={PAYSTACK_REFERENCE}
+Expected Paystack URLs:
+- Webhook URL: https://eventsphere-backend-swqw.onrender.com/api/payments/paystack/webhook
+- Callback URL: https://eventsnest.xyz/payment-success
 */
 
 // fallback — shows all registered routes if a path isn't found

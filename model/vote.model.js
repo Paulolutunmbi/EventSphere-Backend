@@ -80,6 +80,5 @@ const voteSchema = new mongoose.Schema(
 voteSchema.index({ eventId: 1, awardId: 1, contestantId: 1 })
 voteSchema.index({ nomineeId: 1 })
 voteSchema.index({ voterEmail: 1 })
-voteSchema.index({ paymentReference: 1 })
 
 export default mongoose.model('Vote', voteSchema)

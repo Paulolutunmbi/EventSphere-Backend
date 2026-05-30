@@ -3,7 +3,7 @@ import Event from '../model/event.model.js'
 import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
 import mongoose from 'mongoose'
-import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
+import { initializePaystackPayment, PAYSTACK_CALLBACK_URL, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
 import { sendVoteConfirmationEmail } from '../services/email.service.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
@@ -344,8 +344,6 @@ export async function initializeVotePayment(req, res) {
     }
 
     const totalKobo = quantity * VOTE_UNIT_AMOUNT
-    const appUrl    = (process.env.FRONTEND_URL || 'http://localhost:5174').replace(/\/$/, '')
-
     const metadata = {
       platform: 'eventsnest',
       type: 'vote',
@@ -377,15 +375,13 @@ export async function initializeVotePayment(req, res) {
       amount: totalKobo,
       currency: 'NGN',
       channels: ['card', 'bank_transfer', 'ussd', 'bank'],
-      
-      // RIGHT HERE! 👇 It is already implemented:
-      callbackUrl: `${appUrl}/payment-success?type=vote&eventId=${eventId}&awardId=${awardId}&reference={PAYSTACK_REFERENCE}`,
-      
+      callbackUrl: PAYSTACK_CALLBACK_URL,
       metadata,
     })
 
     return sendSuccess(res, 'Payment initialized', {
       authUrl: authorizationUrl,
+      authorization_url: authorizationUrl,
       reference,
       amount: totalKobo,
       quantity,

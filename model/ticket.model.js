@@ -53,7 +53,6 @@ const ticketSchema = new mongoose.Schema(
     paymentReference: {
       type:    String,
       default: '',
-      index:   true,
     },
     ticketReference: {
       type: String,
@@ -103,5 +102,13 @@ ticketSchema.pre('save', function syncTicketReference(next) {
   }
   next()
 })
+
+ticketSchema.index(
+  { paymentReference: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { paymentReference: { $type: 'string', $gt: '' } },
+  }
+)
 
 export default mongoose.model('Ticket', ticketSchema)
