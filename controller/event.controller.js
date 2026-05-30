@@ -143,8 +143,7 @@ export async function listEvents(req, res) {
         { organizerId: req.user.userId },
         ...(email ? [{ 'coHosts.email': email }] : []),
       ],
-    }).sort({ createdAt: -1 })
-
+    })
     const hostIds = [...new Set(events.map(event => String(event.organizerId)).filter(Boolean))]
     const hosts = await User.find({ _id: { $in: hostIds } }).select('name email')
     const hostMap = new Map(hosts.map(host => [String(host._id), host]))
@@ -382,24 +381,45 @@ export async function getEventAdminStats(req, res) {
       return sendError(res, 404, 'Event not found')
     }
 
-    const [tickets, awards, contestants] = await Promise.all([
-      Ticket.find({ eventId }).sort({ createdAt: -1 }),
-      Award.find({ eventId }).sort({ createdAt: -1 }),
-      Contestant.find({ eventId }).sort({ createdAt: -1 }),
+    const [host, tickets, awards, contestants] = await Promise.all([
+      getHostProfile(event.organizerId),
+      Ticket.find({ eventId })
+        .sort({ createdAt: -1 })
+        .select('ticketId attendeeName attendeeEmail ticketType price amountPaid paymentStatus status checkedInAt createdAt')
+        .lean(),
+      Award.find({ eventId })
+        .sort({ createdAt: -1 })
+        .select('title description nominees createdAt')
+        .lean(),
+      Contestant.find({ eventId })
+        .sort({ createdAt: -1 })
+        .select('awardId name slug voteCount voterCount eventId description imageUrl category voteMetadata isActive createdByAdminId updatedAt')
+        .lean(),
     ])
 
     const issuedTickets = tickets.filter(ticket => ticket.status === 'confirmed' || ticket.status === 'checked-in')
-    const paidTickets = issuedTickets.filter(ticket => Number(ticket.amountPaid ?? ticket.price ?? 0) > 0)
-    const freeTickets = issuedTickets.filter(ticket => Number(ticket.amountPaid ?? ticket.price ?? 0) <= 0)
+    const paidTickets = issuedTickets.filter(ticket =>
+      Number(ticket.amountPaid ?? ticket.price ?? 0) > 0 ||
+      ticket.paymentStatus === 'successful' ||
+      Boolean(ticket.paymentReference)
+    )
+    const freeTickets = issuedTickets.filter(ticket => !paidTickets.includes(ticket))
     const scannedTickets = tickets.filter(ticket => ticket.status === 'checked-in')
     const unscannedTickets = tickets.filter(ticket => ticket.status === 'confirmed')
     const totalVotes = awards.reduce((total, award) => total + getVoteCount(award), 0)
     const paidTicketCount = paidTickets.length
     const totalTicketCount = tickets.length
     const issuedTicketCount = issuedTickets.length
+    const contestantsByAwardId = contestants.reduce((map, contestant) => {
+      const key = String(contestant.awardId)
+      const list = map.get(key) || []
+      list.push(contestant)
+      map.set(key, list)
+      return map
+    }, new Map())
 
     return sendSuccess(res, 'Admin stats loaded', {
-      event: toClientEventWithHost(event, await getHostProfile(event.organizerId)),
+      event: toClientEventWithHost(event, host),
       tickets: tickets.map(ticket => ({
         id: ticket._id,
         ticketId: ticket.ticketId,
@@ -407,6 +427,8 @@ export async function getEventAdminStats(req, res) {
         attendeeEmail: ticket.attendeeEmail,
         ticketType: ticket.ticketType,
         price: ticket.price,
+        amountPaid: ticket.amountPaid,
+        paymentStatus: ticket.paymentStatus,
         status: ticket.status,
         createdAt: ticket.createdAt,
       })),
@@ -417,6 +439,8 @@ export async function getEventAdminStats(req, res) {
         attendeeEmail: ticket.attendeeEmail,
         ticketType: ticket.ticketType,
         price: ticket.price,
+        amountPaid: ticket.amountPaid,
+        paymentStatus: ticket.paymentStatus,
         createdAt: ticket.createdAt,
       })),
       paidCount: paidTicketCount,
@@ -461,29 +485,21 @@ export async function getEventAdminStats(req, res) {
         title: award.title,
         description: award.description,
         nominees: Array.isArray(award.nominees)
-          ? award.nominees.map(nominee => ({
-              name: typeof nominee === 'string' ? nominee : (nominee?.name || ''),
-              voteCount: Array.isArray(award.votes)
-                ? award.votes.reduce(
-                    (total, vote) => total + (String(vote.nominee || '').toLowerCase() === String(typeof nominee === 'string' ? nominee : nominee?.name || '').toLowerCase()
-                      ? Math.max(1, Number(vote.quantity || 1))
-                      : 0),
-                    0
-                  )
-                : 0,
-            }))
+          ? award.nominees.map(nominee => {
+              const nomineeName = typeof nominee === 'string' ? nominee : (nominee?.name || '')
+              const matchingContestant = (contestantsByAwardId.get(String(award._id)) || []).find(contestant => contestant.slug === slugify(nomineeName))
+
+              return {
+                name: nomineeName,
+                voteCount: Number(matchingContestant?.voteCount || 0),
+                voterCount: Number(matchingContestant?.voterCount || 0),
+              }
+            })
           : [],
-        voteCount: getVoteCount(award),
-        votesCount: getVoteCount(award),
-        totalVotes: getVoteCount(award),
-        votes: Array.isArray(award.votes) ? award.votes.map(vote => ({
-          name: vote.name,
-          email: vote.email,
-          quantity: Math.max(1, Number(vote.quantity || 1)),
-          amount: Number(vote.amount || 0),
-          paymentReference: vote.paymentReference || '',
-          createdAt: vote.createdAt,
-        })) : [],
+        voteCount: (contestantsByAwardId.get(String(award._id)) || []).reduce((total, contestant) => total + Number(contestant.voteCount || 0), 0),
+        votesCount: (contestantsByAwardId.get(String(award._id)) || []).reduce((total, contestant) => total + Number(contestant.voteCount || 0), 0),
+        totalVotes: (contestantsByAwardId.get(String(award._id)) || []).reduce((total, contestant) => total + Number(contestant.voteCount || 0), 0),
+        voterCount: (contestantsByAwardId.get(String(award._id)) || []).reduce((total, contestant) => total + Number(contestant.voterCount || 0), 0),
         createdAt: award.createdAt,
       })),
       nominees: contestants.map(contestant => ({

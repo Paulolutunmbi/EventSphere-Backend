@@ -45,6 +45,14 @@ function getVoterCount(award) {
   ).size
 }
 
+function getContestantStatsForAward(contestantsByAwardId, awardId) {
+  const contestants = contestantsByAwardId.get(String(awardId)) || []
+  const voteCount = contestants.reduce((total, contestant) => total + Number(contestant.voteCount || 0), 0)
+  const voterCount = contestants.reduce((total, contestant) => total + Number(contestant.voterCount || 0), 0)
+
+  return { contestants, voteCount, voterCount }
+}
+
 function normalizeNominees(input, { createdByAdminId } = {}) {
   const slugifyValue = value => String(value || '')
     .toLowerCase()
@@ -212,6 +220,35 @@ function toPublicAward(award) {
   }
 }
 
+function toPublicAwardFromContestants(award, contestantsByAwardId) {
+  const { contestants, voteCount, voterCount } = getContestantStatsForAward(contestantsByAwardId, award._id)
+
+  return {
+    id: award._id,
+    title: award.title,
+    description: award.description,
+    nominees: Array.isArray(award.nominees)
+      ? award.nominees.map(nominee => {
+          const nomineeName = typeof nominee === 'string' ? nominee : nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || ''
+          const matchingContestant = contestants.find(contestant => String(contestant.slug || '').toLowerCase() === slugify(nomineeName))
+
+          return {
+            name: nomineeName,
+            imageUrl: typeof nominee === 'object' ? (nominee.imageUrl || nominee.image || nominee.photo || nominee.picture || nominee.avatar || '') : '',
+            slug: typeof nominee === 'object' ? (nominee.slug || slugify(nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || nominee || '')) : slugify(nominee),
+            voteCount: Number(matchingContestant?.voteCount || 0),
+            voterCount: Number(matchingContestant?.voterCount || 0),
+          }
+        })
+      : [],
+    voteCount,
+    votesCount: voteCount,
+    totalVotes: voteCount,
+    voterCount,
+    createdAt: award.createdAt,
+  }
+}
+
 function toAdminAward(award) {
   return {
     id:          award._id,
@@ -339,9 +376,22 @@ export async function initializeVotePayment(req, res) {
 export async function listAwards(req, res) {
   try {
     const { eventId } = req.params
-    const awards = await Award.find({ eventId }).sort({ createdAt: -1 })
-    await Promise.all(awards.map(award => syncContestantsForAward(award, eventId)))
-    return sendSuccess(res, 'Awards loaded', { awards: awards.map(toPublicAward) })
+    const [awards, contestants] = await Promise.all([
+      Award.find({ eventId }).sort({ createdAt: -1 }).select('title description nominees createdAt'),
+      Contestant.find({ eventId, isActive: true }).select('awardId slug voteCount voterCount').lean(),
+    ])
+
+    const contestantsByAwardId = contestants.reduce((map, contestant) => {
+      const key = String(contestant.awardId)
+      const list = map.get(key) || []
+      list.push(contestant)
+      map.set(key, list)
+      return map
+    }, new Map())
+
+    return sendSuccess(res, 'Awards loaded', {
+      awards: awards.map(award => toPublicAwardFromContestants(award, contestantsByAwardId)),
+    })
   } catch (error) {
     console.error('List awards error:', error)
     return sendError(res, 500, 'Failed to load awards')

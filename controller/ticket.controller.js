@@ -275,8 +275,13 @@ export async function verifyPaystackPayment(req, res) {
       return sendError(res, 400, 'Payment amount does not match expected total')
     }
 
-    ticket.status           = 'confirmed'
-    ticket.paymentReference = reference
+    ticket.status               = 'confirmed'
+    ticket.paymentReference     = reference
+    ticket.transactionReference = payload.data?.reference || reference
+    ticket.paymentStatus        = payload.data?.status === 'success' ? 'successful' : 'failed'
+    ticket.amountPaid           = Math.max(0, Math.round(paidAmount / 100))
+    ticket.paystackStatus       = payload.data?.status || 'success'
+    ticket.paystackPayload      = payload.data
     await ticket.save()
 
     const event = await Event.findById(ticket.eventId)
