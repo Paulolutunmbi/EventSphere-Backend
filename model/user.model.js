@@ -25,4 +25,6 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 )
 
+userSchema.index({ createdAt: -1 })
+
 export default mongoose.model('User', userSchema)

@@ -5,7 +5,7 @@ import { sendError } from '../utils/response.js'
 export async function requireEventOwner(req, res, next) {
   try {
     const { eventId } = req.params
-    const event = await Event.findById(eventId)
+    const event = await Event.findById(eventId).select('organizerId createdByAdminId')
     if (!event) return sendError(res, 404, 'Event not found')
 
     const ownerId = event.createdByAdminId || event.organizerId
@@ -25,6 +25,7 @@ export async function requireNomineeOwner(req, res, next) {
   try {
     const { nomineeId } = req.params
     const nominee = await Contestant.findById(nomineeId)
+      .select('eventId awardId createdByAdminId name slug imageUrl description category voteMetadata')
     if (!nominee) return sendError(res, 404, 'Nominee not found')
 
     if (String(nominee.createdByAdminId || '') !== String(req.user?.userId || '')) {

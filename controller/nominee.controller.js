@@ -20,7 +20,7 @@ export async function updateNominee(req, res) {
       return sendError(res, 404, 'Nominee not found')
     }
 
-    const event = await Event.findById(nominee.eventId).select('status')
+    const event = await Event.findById(nominee.eventId).select('status').lean()
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
@@ -59,7 +59,7 @@ export async function updateNominee(req, res) {
       { new: true, runValidators: true }
     )
 
-    const award = await Award.findById(nominee.awardId)
+    const award = await Award.findById(nominee.awardId).select('nominees')
     if (award) {
       const currentSlug = nominee.slug
       const nextNomineePayload = {

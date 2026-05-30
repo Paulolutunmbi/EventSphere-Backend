@@ -55,5 +55,8 @@ const awardSchema = new mongoose.Schema(
 )
 
 awardSchema.index({ eventId: 1, title: 1 }, { unique: true })
+awardSchema.index({ eventId: 1, createdAt: -1 })
+awardSchema.index({ 'votes.paymentReference': 1 })
+awardSchema.index({ createdAt: -1 })
 
 export default mongoose.model('Award', awardSchema)

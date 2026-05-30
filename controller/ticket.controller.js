@@ -6,7 +6,7 @@ import Award from '../model/award.model.js'
 import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
 import { sendTicketPurchaseEmail, sendVoteConfirmationEmail } from '../services/email.service.js'
-import { initializePaystackPayment, PAYSTACK_CALLBACK_URL, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
+import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
 const EVENT_TICKET_FIELDS = 'title startDate startTime endDate endTime location ticketPrice ticketPrices organizerId rsvps coHosts'
@@ -115,18 +115,16 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType,
     ],
   }
 
-  const { authorizationUrl, reference } = await initializePaystackPayment({
+  const { authorization_url, reference } = await initializePaystackPayment({
     email,
     amount: totalAmountInKobo,
     currency: 'NGN',
-    callbackUrl: PAYSTACK_CALLBACK_URL,
     metadata,
     channels: ['card', 'bank_transfer', 'ussd', 'bank'],
   })
 
   return {
-    authUrl: authorizationUrl,
-    authorization_url: authorizationUrl,
+    authorization_url,
     reference,
     amount:    totalAmountInKobo,
     fee:       feeInKobo,
@@ -185,12 +183,10 @@ export async function registerForEvent(req, res) {
         }
 
         // retry payment for existing pending ticket
-        const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket: existing, event, ticketType, donationNaira })
+        const { authorization_url, reference } = await initializeTicketPayment({ email, name, ticket: existing, event, ticketType, donationNaira })
         existing.paymentReference = reference
         await existing.save()
-        return sendSuccess(res, 'Proceed to payment', {
-          ticket: toClientTicket(existing), paymentRequired: true, redirect: authUrl,
-        })
+        return res.json({ success: true, data: { authorization_url, reference } })
       }
     }
 
@@ -219,15 +215,11 @@ export async function registerForEvent(req, res) {
       ticketType, price: (priceInKobo + donationKobo) / 100, status: 'pending',
     })
 
-    const { authUrl, reference } = await initializeTicketPayment({ email, name, ticket, event, ticketType, donationNaira })
+    const { authorization_url, reference } = await initializeTicketPayment({ email, name, ticket, event, ticketType, donationNaira })
     ticket.paymentReference = reference
     await ticket.save()
 
-    return sendSuccess(res, 'Proceed to payment', {
-      ticket: toClientTicket(ticket),
-      paymentRequired: true,
-      redirect: authUrl,
-    }, 201)
+    return res.status(201).json({ success: true, data: { authorization_url, reference } })
   } catch (err) {
     console.error('Register error:', err)
     return sendError(res, 500, 'Registration failed')
@@ -553,15 +545,15 @@ export async function handlePaystackWebhook(req, res) {
     }
 
     const metadata = data.metadata || {}
-    const paymentType = String(metadata.type || metadata.payment_type || '').trim().toLowerCase()
+    const paymentType = String(metadata.type || '').trim().toLowerCase()
 
-    if (paymentType === 'ticket' || metadata.ticket_id) {
+    if (paymentType === 'ticket') {
       const result = await processTicketWebhook({ data, metadata, req })
       const responseData = isWebhook ? null : { type: 'ticket', ...result }
       return sendSuccess(res, 'Ticket payment verified', responseData)
     }
 
-    if (paymentType === 'vote' || metadata.contestant_id || metadata.award_id) {
+    if (paymentType === 'vote') {
       const result = await processVoteWebhook({ data, metadata })
       const responseData = isWebhook ? null : { type: 'vote', ...result }
       return sendSuccess(res, 'Vote payment recorded', responseData)

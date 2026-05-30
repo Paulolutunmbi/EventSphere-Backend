@@ -110,5 +110,8 @@ ticketSchema.index(
     partialFilterExpression: { paymentReference: { $type: 'string', $gt: '' } },
   }
 )
+ticketSchema.index({ eventId: 1, createdAt: -1 })
+ticketSchema.index({ status: 1 })
+ticketSchema.index({ createdAt: -1 })
 
 export default mongoose.model('Ticket', ticketSchema)

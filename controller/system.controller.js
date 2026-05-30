@@ -8,6 +8,7 @@ const CACHE_TTL_MS = 30_000
 const statsCache = {
   value: null,
   expiresAt: 0,
+  pending: null,
 }
 
 export async function getSystemStats(req, res) {
@@ -17,23 +18,25 @@ export async function getSystemStats(req, res) {
       return sendSuccess(res, 'System stats loaded', statsCache.value)
     }
 
-    const [totalUsers, totalEvents, totalTicketsSold, voteAgg] = await Promise.all([
-      User.countDocuments(),
-      Event.countDocuments(),
-      Ticket.countDocuments({ status: { $in: ['confirmed', 'checked-in'] } }),
-      Vote.aggregate([
-        { $group: { _id: null, totalVotes: { $sum: '$quantity' } } },
-      ]),
-    ])
-
-    const totalVotes = Number(voteAgg?.[0]?.totalVotes || 0)
-    const payload = {
-      totalUsers,
-      totalEvents,
-      totalTicketsSold,
-      totalVotes,
+    if (!statsCache.pending) {
+      statsCache.pending = Promise.all([
+        User.countDocuments(),
+        Event.countDocuments(),
+        Ticket.countDocuments({ status: { $in: ['confirmed', 'checked-in'] } }),
+        Vote.aggregate([
+          { $group: { _id: null, totalVotes: { $sum: '$quantity' } } },
+        ]),
+      ]).then(([totalUsers, totalEvents, totalTicketsSold, voteAgg]) => ({
+        totalUsers,
+        totalEvents,
+        totalTicketsSold,
+        totalVotes: Number(voteAgg?.[0]?.totalVotes || 0),
+      })).finally(() => {
+        statsCache.pending = null
+      })
     }
 
+    const payload = await statsCache.pending
     statsCache.value = payload
     statsCache.expiresAt = now + CACHE_TTL_MS
 

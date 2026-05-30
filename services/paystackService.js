@@ -38,10 +38,8 @@ export async function initializePaystackPayment({ email, amount, currency = 'NGN
   }
 
   return {
-    authorizationUrl: payload.data.authorization_url,
     authorization_url: payload.data.authorization_url,
     reference: payload.data.reference,
-    accessCode: payload.data.access_code,
   }
 }
 

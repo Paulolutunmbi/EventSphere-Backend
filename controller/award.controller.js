@@ -3,7 +3,7 @@ import Event from '../model/event.model.js'
 import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
 import mongoose from 'mongoose'
-import { initializePaystackPayment, PAYSTACK_CALLBACK_URL, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
+import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
 import { sendVoteConfirmationEmail } from '../services/email.service.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
@@ -347,7 +347,6 @@ export async function initializeVotePayment(req, res) {
     const metadata = {
       platform: 'eventsnest',
       type: 'vote',
-      payment_type: 'vote',
       nominee: selectedContestant.name,
       contestant_id: String(selectedContestant._id),
       contestant_slug: selectedContestant.slug,
@@ -370,22 +369,15 @@ export async function initializeVotePayment(req, res) {
     }
 
     // Lines ~155-162 in your award.controller.js
-    const { authorizationUrl, reference } = await initializePaystackPayment({
+    const { authorization_url, reference } = await initializePaystackPayment({
       email,
       amount: totalKobo,
       currency: 'NGN',
       channels: ['card', 'bank_transfer', 'ussd', 'bank'],
-      callbackUrl: PAYSTACK_CALLBACK_URL,
       metadata,
     })
 
-    return sendSuccess(res, 'Payment initialized', {
-      authUrl: authorizationUrl,
-      authorization_url: authorizationUrl,
-      reference,
-      amount: totalKobo,
-      quantity,
-    })
+    return res.json({ success: true, data: { authorization_url, reference } })
   } catch (error) {
     console.error('Initialize vote payment error:', error)
     return sendError(res, 500, 'Failed to initialize vote payment')

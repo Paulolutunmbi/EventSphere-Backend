@@ -432,10 +432,11 @@ export async function getEventAdminStats(req, res) {
       ticket.paymentStatus === 'successful' ||
       Boolean(ticket.paymentReference)
     )
-    const freeTickets = issuedTickets.filter(ticket => !paidTickets.includes(ticket))
+    const paidTicketIds = new Set(paidTickets.map(ticket => String(ticket._id)))
+    const freeTickets = issuedTickets.filter(ticket => !paidTicketIds.has(String(ticket._id)))
     const scannedTickets = tickets.filter(ticket => ticket.status === 'checked-in')
     const unscannedTickets = tickets.filter(ticket => ticket.status === 'confirmed')
-    const totalVotes = awards.reduce((total, award) => total + getVoteCount(award), 0)
+    const totalVotes = contestants.reduce((total, contestant) => total + Number(contestant.voteCount || 0), 0)
     const paidTicketCount = paidTickets.length
     const totalTicketCount = tickets.length
     const issuedTicketCount = issuedTickets.length

@@ -71,5 +71,8 @@ const contestantSchema = new mongoose.Schema(
 )
 
 contestantSchema.index({ eventId: 1, awardId: 1, slug: 1 }, { unique: true })
+contestantSchema.index({ eventId: 1, createdAt: -1 })
+contestantSchema.index({ eventId: 1, awardId: 1, createdAt: 1 })
+contestantSchema.index({ createdAt: -1 })
 
 export default mongoose.model('Contestant', contestantSchema)
