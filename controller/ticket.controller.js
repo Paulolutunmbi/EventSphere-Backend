@@ -1,6 +1,10 @@
 import QRCode from 'qrcode'
+import crypto from 'crypto'
 import Ticket from '../model/ticket.model.js'
 import Event from '../model/event.model.js'
+import Award from '../model/award.model.js'
+import Contestant from '../model/contestant.model.js'
+import Vote from '../model/vote.model.js'
 import { sendEmail } from '../services/emailService.js'
 import { ticketEmailTemplate } from '../services/emailTemplates.js'
 import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
@@ -86,6 +90,7 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType,
 
   const metadata = {
     platform: 'eventsnest',
+    type: 'ticket',
     ticket_id: ticket.ticketId,
     ticket_type: ticketType,
     event_id: String(event._id),
@@ -413,4 +418,234 @@ function isFreeTicketPrice(priceValue) {
   if (!n || n === 'free') return true
   const num = Number(n.replace(/[^0-9.]/g, ''))
   return Number.isFinite(num) && num <= 0
+}
+
+/* ─────────────────────────────────────────────────
+  POST /api/tickets/paystack/verify
+  POST /api/payments/paystack/webhook
+  Unified Paystack handler for ticket + voting payments.
+───────────────────────────────────────────────── */
+export async function handlePaystackWebhook(req, res) {
+  try {
+    const signature = String(req.headers['x-paystack-signature'] || '')
+    const isWebhook = Boolean(req.body?.event || req.body?.data)
+    if (isWebhook) {
+      if (!signature || !req.rawBody) {
+        return sendError(res, 401, 'Missing Paystack signature')
+      }
+      const computed = crypto
+        .createHmac('sha512', process.env.PAYSTACK_SECRET_KEY || '')
+        .update(req.rawBody)
+        .digest('hex')
+
+      if (computed !== signature) {
+        return sendError(res, 401, 'Invalid Paystack signature')
+      }
+    }
+
+    let payload = req.body
+
+    if (!payload?.data && req.body?.reference) {
+      payload = await verifyPaystackTransaction(String(req.body.reference || '').trim())
+    }
+
+    const data = payload?.data
+    if (!data) {
+      return sendError(res, 400, 'Invalid Paystack payload')
+    }
+
+    if (data.status !== 'success') {
+      return sendSuccess(res, 'Payment not completed', { status: data.status || 'pending' })
+    }
+
+    const metadata = data.metadata || {}
+    const paymentType = String(metadata.type || metadata.payment_type || '').trim().toLowerCase()
+
+    if (paymentType === 'ticket' || metadata.ticket_id) {
+      const result = await processTicketWebhook({ data, metadata, req })
+      const responseData = isWebhook ? null : result
+      return sendSuccess(res, 'Ticket payment verified', responseData)
+    }
+
+    if (paymentType === 'voting' || paymentType === 'vote' || metadata.contestant_id || metadata.award_id) {
+      const result = await processVoteWebhook({ data, metadata })
+      const responseData = isWebhook ? null : result
+      return sendSuccess(res, 'Vote payment recorded', responseData)
+    }
+
+    return sendError(res, 400, 'Unsupported Paystack payment type')
+  } catch (err) {
+    console.error('Paystack webhook error:', err)
+    return sendError(res, 500, 'Failed to process Paystack webhook')
+  }
+}
+
+async function processTicketWebhook({ data, metadata, req }) {
+  const ticketId = String(metadata.ticket_id || req.body?.ticketId || '').trim()
+  if (!ticketId) {
+    throw new Error('ticket_id is required in metadata')
+  }
+
+  const ticket = await Ticket.findOne({ ticketId })
+  if (!ticket) {
+    throw new Error('Ticket not found')
+  }
+
+  if (ticket.status === 'confirmed' || ticket.status === 'checked-in') {
+    const event = await Event.findById(ticket.eventId)
+    return { ticket: toClientTicket(ticket), event }
+  }
+
+  const paidAmount = Number(data.amount || 0)
+  const expectedTotal = Number(metadata.total_amount || metadata.totalAmount || 0)
+  if (expectedTotal && paidAmount !== expectedTotal) {
+    throw new Error('Payment amount does not match expected total')
+  }
+
+  ticket.status = 'confirmed'
+  ticket.paymentStatus = 'successful'
+  ticket.paymentReference = data.reference || ticket.paymentReference
+  ticket.transactionReference = data.reference || ticket.transactionReference
+  ticket.amountPaid = paidAmount
+  ticket.paystackStatus = data.status || 'success'
+  ticket.paystackPayload = data
+
+  const qrAssets = await ensureTicketQrAssets(ticket)
+  await ticket.save()
+
+  const event = await Event.findById(ticket.eventId)
+  if (event) {
+    if (syncRsvpFromTicket(event, ticket)) {
+      await event.save()
+    }
+    sendTicketEmail(ticket, event, qrAssets).catch(console.error)
+  }
+
+  return { ticket: toClientTicket(ticket), event }
+}
+
+function normalizeVoterName(name, email) {
+  const trimmed = String(name || '').trim()
+  if (trimmed) return trimmed
+
+  const localPart = String(email || '').split('@')[0] || ''
+  const cleaned = localPart.replace(/[._+-]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!cleaned) return ''
+
+  return cleaned
+    .split(' ')
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+function slugify(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
+async function resolveContestantFromMetadata({ eventId, awardId, metadata }) {
+  if (metadata.contestant_id) {
+    const contestant = await Contestant.findOne({ _id: metadata.contestant_id, eventId, awardId, isActive: true })
+    if (contestant) return contestant
+  }
+
+  const slug = slugify(metadata.contestant_slug || metadata.nominee || '')
+  if (!slug) return null
+
+  return Contestant.findOne({ eventId, awardId, slug, isActive: true })
+}
+
+async function processVoteWebhook({ data, metadata }) {
+  const reference = String(data.reference || '').trim()
+  const eventId = String(metadata.event_id || '').trim()
+  const awardId = String(metadata.award_id || '').trim()
+  if (!reference || !eventId || !awardId) {
+    throw new Error('event_id, award_id, and reference are required in metadata')
+  }
+
+  const existingVote = await Vote.findOne({ paymentReference: reference })
+  if (existingVote) {
+    return { voteId: existingVote._id }
+  }
+
+  const award = await Award.findOne({ _id: awardId, eventId })
+  if (!award) {
+    throw new Error('Award not found')
+  }
+
+  const contestant = await resolveContestantFromMetadata({ eventId, awardId, metadata })
+  if (!contestant) {
+    throw new Error('Contestant not found')
+  }
+
+  const paidAmount = Number(data.amount || 0)
+  const voteUnitAmount = Number(metadata.vote_unit_amount || 5000)
+  const quantityFromAmount = voteUnitAmount > 0 ? Math.round(paidAmount / voteUnitAmount) : 0
+  const quantityFromMeta = Number(metadata.quantity || 0)
+  const quantity = quantityFromAmount > 0 ? quantityFromAmount : quantityFromMeta
+
+  if (!Number.isFinite(quantity) || quantity <= 0) {
+    throw new Error('Invalid vote quantity')
+  }
+
+  if (paidAmount > 0 && voteUnitAmount > 0 && quantity * voteUnitAmount !== paidAmount) {
+    throw new Error('Payment amount does not match the vote quantity')
+  }
+
+  const email = String(metadata.email || data.customer?.email || '').trim().toLowerCase()
+  const name = normalizeVoterName(metadata.name || metadata.voter_name || '', email)
+
+  if (!email || !name) {
+    throw new Error('Voter email and name are required')
+  }
+
+  const vote = await Vote.create({
+    eventId,
+    awardId,
+    contestantId: contestant._id,
+    voterName: name,
+    voterEmail: email,
+    quantity,
+    amountPaid: paidAmount,
+    paymentReference: reference,
+    transactionReference: data.reference || reference,
+    paymentStatus: data.status === 'success' ? 'successful' : data.status || 'failed',
+    paystackStatus: data.status || 'success',
+    paystackPayload: data,
+  })
+
+  await Contestant.updateOne(
+    { _id: contestant._id },
+    { $inc: { voteCount: quantity, voterCount: 1 } }
+  )
+
+  await Award.updateOne(
+    { _id: award._id, eventId, 'votes.paymentReference': { $ne: reference } },
+    {
+      $push: {
+        votes: {
+          name,
+          email,
+          nominee: contestant.name,
+          quantity,
+          amount: paidAmount,
+          paymentReference: reference,
+        },
+      },
+    }
+  )
+
+  return {
+    voteId: vote._id,
+    contestant: {
+      id: contestant._id,
+      name: contestant.name,
+      slug: contestant.slug,
+    },
+    quantity,
+    amount: paidAmount,
+  }
 }

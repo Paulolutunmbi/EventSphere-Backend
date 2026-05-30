@@ -592,3 +592,34 @@ function isEventOwner(event, user) {
   const ownerId = event?.createdByAdminId || event?.organizerId
   return String(ownerId || '') === String(user?.userId || '')
 }
+
+export async function getEventLeaderboard(req, res) {
+  try {
+    const { eventId } = req.params
+
+    const contestants = await Contestant.find({ eventId, isActive: true })
+      .sort({ voteCount: -1, voterCount: -1, updatedAt: -1 })
+
+    const awardIds = [...new Set(contestants.map(contestant => String(contestant.awardId)).filter(Boolean))]
+    const awards = await Award.find({ _id: { $in: awardIds } }).select('title')
+    const awardMap = new Map(awards.map(award => [String(award._id), award.title]))
+
+    return sendSuccess(res, 'Leaderboard loaded', {
+      leaderboard: contestants.map(contestant => ({
+        id: contestant._id,
+        eventId: contestant.eventId,
+        awardId: contestant.awardId,
+        awardTitle: awardMap.get(String(contestant.awardId)) || '',
+        name: contestant.name,
+        slug: contestant.slug,
+        imageUrl: contestant.imageUrl || '',
+        category: contestant.category || '',
+        voteCount: contestant.voteCount,
+        voterCount: contestant.voterCount,
+      })),
+    })
+  } catch (error) {
+    console.error('Get leaderboard error:', error)
+    return sendError(res, 500, 'Failed to load leaderboard')
+  }
+}
