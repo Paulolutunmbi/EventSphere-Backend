@@ -1,5 +1,5 @@
 import OTP from '../model/otp.model.js'
-import { sendEmail } from './emailService.js'
+import { sendEmail } from './email.service.js'
 import { otpEmailTemplate } from './emailTemplates.js'
 
 const OTP_LENGTH = 6

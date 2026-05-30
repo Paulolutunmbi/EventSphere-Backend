@@ -4,9 +4,11 @@ import Ticket from '../model/ticket.model.js'
 import Award from '../model/award.model.js'
 import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
-import { sendEmail } from '../services/emailService.js'
+import { sendEmail, sendEventCreationEmail } from '../services/email.service.js'
 import { invitationEmailTemplate } from '../services/emailTemplates.js'
 import { sendError, sendSuccess } from '../utils/response.js'
+
+const EVENT_SELECT_FIELDS = 'organizerId createdByAdminId title slug description startDate startTime endDate endTime location isPublic ticketPrice requireApproval votingRules capacity theme coverImage status ticketPrices invitedGuests coHosts rsvps createdAt updatedAt'
 
 function buildEventPayload(body = {}) {
   return {
@@ -86,14 +88,14 @@ function getVoteCount(award) {
 }
 
 async function getHostProfile(userId) {
-  return User.findById(userId).select('name email')
+  return User.findById(userId).select('name email').lean()
 }
 
 function getRequesterEmail(user) {
   return String(user?.email || '').trim().toLowerCase()
 }
 
-async function findAccessibleEvent(eventId, user) {
+async function findAccessibleEvent(eventId, user, { lean = false, select = EVENT_SELECT_FIELDS } = {}) {
   const email = getRequesterEmail(user)
   const query = {
     _id: eventId,
@@ -106,7 +108,18 @@ async function findAccessibleEvent(eventId, user) {
     query.$or.push({ 'coHosts.email': email })
   }
 
-  return Event.findOne(query)
+  let dbQuery = Event.findOne(query).select(select)
+  if (lean) {
+    dbQuery = dbQuery.lean()
+  }
+  return dbQuery
+}
+
+function slugify(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
 }
 
 export async function createEvent(req, res) {
@@ -123,10 +136,17 @@ export async function createEvent(req, res) {
 
     const event = await Event.create({
       ...payload,
+      slug: slugify(payload.title),
       organizerId: req.user.userId,
       createdByAdminId: req.user.userId,
     })
     const host = await getHostProfile(req.user.userId)
+
+    if (host?.email) {
+      sendEventCreationEmail({ to: host.email, event, creator: host }).catch(err => {
+        console.error('Event creation email error:', err)
+      })
+    }
 
     return sendSuccess(res, 'Event created successfully', { event: toClientEventWithHost(event, host) }, 201)
   } catch (error) {
@@ -144,8 +164,10 @@ export async function listEvents(req, res) {
         ...(email ? [{ 'coHosts.email': email }] : []),
       ],
     })
+      .select(EVENT_SELECT_FIELDS)
+      .lean()
     const hostIds = [...new Set(events.map(event => String(event.organizerId)).filter(Boolean))]
-    const hosts = await User.find({ _id: { $in: hostIds } }).select('name email')
+    const hosts = await User.find({ _id: { $in: hostIds } }).select('name email').lean()
     const hostMap = new Map(hosts.map(host => [String(host._id), host]))
 
     return sendSuccess(res, 'Events loaded', {
@@ -159,10 +181,13 @@ export async function listEvents(req, res) {
 
 export async function listPublicEvents(req, res) {
   try {
-    const events = await Event.find({ isPublic: true }).sort({ createdAt: -1 })
+    const events = await Event.find({ isPublic: true })
+      .sort({ createdAt: -1 })
+      .select(EVENT_SELECT_FIELDS)
+      .lean()
 
     const hostIds = [...new Set(events.map(event => String(event.organizerId)).filter(Boolean))]
-    const hosts = await User.find({ _id: { $in: hostIds } }).select('name email')
+    const hosts = await User.find({ _id: { $in: hostIds } }).select('name email').lean()
     const hostMap = new Map(hosts.map(host => [String(host._id), host]))
 
     return sendSuccess(res, 'Public events loaded', {
@@ -177,7 +202,7 @@ export async function listPublicEvents(req, res) {
 export async function getEvent(req, res) {
   try {
     const { eventId } = req.params
-    const event = await findAccessibleEvent(eventId, req.user)
+    const event = await findAccessibleEvent(eventId, req.user, { lean: true })
 
     if (!event) {
       return sendError(res, 404, 'Event not found')
@@ -263,6 +288,10 @@ export async function updateEvent(req, res) {
       }
     }
 
+    if (allowed.title) {
+      allowed.slug = slugify(allowed.title)
+    }
+
     Object.assign(event, allowed)
     await event.save()
 
@@ -327,7 +356,7 @@ export async function sendInvitations(req, res) {
 export async function getPublicEvent(req, res) {
   try {
     const { eventId } = req.params
-    const event = await Event.findById(eventId)
+    const event = await Event.findById(eventId).select(EVENT_SELECT_FIELDS).lean()
 
     if (!event) {
       return sendError(res, 404, 'Event not found')
@@ -376,7 +405,7 @@ export async function submitRsvp(req, res) {
 export async function getEventAdminStats(req, res) {
   try {
     const { eventId } = req.params
-    const event = await findAccessibleEvent(eventId, req.user)
+    const event = await findAccessibleEvent(eventId, req.user, { lean: true })
     if (!event) {
       return sendError(res, 404, 'Event not found')
     }
@@ -615,9 +644,11 @@ export async function getEventLeaderboard(req, res) {
 
     const contestants = await Contestant.find({ eventId, isActive: true })
       .sort({ voteCount: -1, voterCount: -1, updatedAt: -1 })
+      .select('awardId name slug imageUrl category voteCount voterCount eventId')
+      .lean()
 
     const awardIds = [...new Set(contestants.map(contestant => String(contestant.awardId)).filter(Boolean))]
-    const awards = await Award.find({ _id: { $in: awardIds } }).select('title')
+    const awards = await Award.find({ _id: { $in: awardIds } }).select('title').lean()
     const awardMap = new Map(awards.map(award => [String(award._id), award.title]))
 
     return sendSuccess(res, 'Leaderboard loaded', {

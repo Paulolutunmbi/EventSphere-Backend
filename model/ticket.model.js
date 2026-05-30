@@ -15,6 +15,11 @@ const ticketSchema = new mongoose.Schema(
       required: true,
       index:    true,
     },
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      index: true,
+    },
     // who holds the ticket
     attendeeName: {
       type:     String,
@@ -48,6 +53,12 @@ const ticketSchema = new mongoose.Schema(
     paymentReference: {
       type:    String,
       default: '',
+      index:   true,
+    },
+    ticketReference: {
+      type: String,
+      default: '',
+      index: true,
     },
     transactionReference: {
       type: String,
@@ -85,5 +96,12 @@ const ticketSchema = new mongoose.Schema(
   },
   { timestamps: true }
 )
+
+ticketSchema.pre('save', function syncTicketReference(next) {
+  if (!this.ticketReference) {
+    this.ticketReference = this.ticketId
+  }
+  next()
+})
 
 export default mongoose.model('Ticket', ticketSchema)

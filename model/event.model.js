@@ -19,6 +19,13 @@ const eventSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    slug: {
+      type: String,
+      default: '',
+      trim: true,
+      lowercase: true,
+      index: true,
+    },
     description: {
       type: String,
       default: '',
@@ -135,5 +142,9 @@ const eventSchema = new mongoose.Schema(
     timestamps: true,
   }
 )
+
+eventSchema.index({ organizerId: 1 })
+eventSchema.index({ slug: 1 })
+eventSchema.index({ createdAt: -1 })
 
 export default mongoose.model('Event', eventSchema)

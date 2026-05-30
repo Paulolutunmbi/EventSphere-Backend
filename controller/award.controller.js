@@ -4,8 +4,7 @@ import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
 import mongoose from 'mongoose'
 import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
-import { sendEmail } from '../services/emailService.js'
-import { voteConfirmationTemplate } from '../services/emailTemplates.js'
+import { sendVoteConfirmationEmail } from '../services/email.service.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
 const VOTE_UNIT_AMOUNT  = 5000   // kobo = ₦50 per vote
@@ -332,7 +331,7 @@ export async function initializeVotePayment(req, res) {
     const award = await Award.findOne({ _id: awardId, eventId })
     if (!award)  return sendError(res, 404, 'Award not found')
 
-    const event = await Event.findById(eventId)
+    const event = await Event.findById(eventId).select('organizerId coHosts title').lean()
     await syncContestantsForAward(award, eventId)
 
     const selectedContestant = await resolveContestant({ eventId, awardId, nominee })
@@ -349,7 +348,7 @@ export async function initializeVotePayment(req, res) {
 
     const metadata = {
       platform: 'eventsnest',
-      type: 'voting',
+      type: 'vote',
       payment_type: 'vote',
       nominee: selectedContestant.name,
       contestant_id: String(selectedContestant._id),
@@ -380,7 +379,7 @@ export async function initializeVotePayment(req, res) {
       channels: ['card', 'bank_transfer', 'ussd', 'bank'],
       
       // RIGHT HERE! 👇 It is already implemented:
-      callbackUrl: `${appUrl}/events/${eventId}/vote?awardId=${awardId}&reference={PAYSTACK_REFERENCE}`,
+      callbackUrl: `${appUrl}/payment-success?type=vote&eventId=${eventId}&awardId=${awardId}&reference={PAYSTACK_REFERENCE}`,
       
       metadata,
     })
@@ -404,7 +403,7 @@ export async function listAwards(req, res) {
   try {
     const { eventId } = req.params
     const [awards, contestants, voteRows] = await Promise.all([
-      Award.find({ eventId }).sort({ createdAt: -1 }).select('title description nominees createdAt'),
+      Award.find({ eventId }).sort({ createdAt: -1 }).select('title description nominees createdAt').lean(),
       Contestant.find({ eventId, isActive: true }).select('awardId slug voteCount voterCount').lean(),
       Vote.aggregate([
         { $match: { eventId: new mongoose.Types.ObjectId(String(eventId)) } },
@@ -440,7 +439,7 @@ export async function listContestants(req, res) {
     await syncContestantsForAward(award, eventId)
 
     const [contestants, voteRows] = await Promise.all([
-      Contestant.find({ eventId, awardId, isActive: true }).sort({ createdAt: 1 }),
+      Contestant.find({ eventId, awardId, isActive: true }).sort({ createdAt: 1 }).lean(),
       Vote.aggregate([
         {
           $match: {
@@ -507,7 +506,7 @@ export async function createAward(req, res) {
     if (!title)              return sendError(res, 400, 'Award title is required')
     if (!nominees.length)    return sendError(res, 400, 'Add at least one nominee')
 
-    const event = await Event.findById(eventId)
+    const event = await Event.findById(eventId).select('organizerId coHosts').lean()
     if (!event) return sendError(res, 404, 'Event not found')
 
     // authorization: allow organizer or listed co-hosts (by email)
@@ -580,8 +579,6 @@ export async function voteAward(req, res) {
     // Fall back to req.body only if metadata is missing (e.g. old requests)
     const metadata = payload.data?.metadata || {}
 
-    const event = await Event.findById(eventId).select('title')
-
     const email = String(
       metadata.email || req.body?.email || payload.data?.customer?.email || ''
     ).trim().toLowerCase()
@@ -636,6 +633,7 @@ export async function voteAward(req, res) {
       eventId,
       awardId,
       contestantId: contestant._id,
+      nomineeId: contestant._id,
       voterName: name,
       voterEmail: email,
       quantity,
@@ -652,13 +650,11 @@ export async function voteAward(req, res) {
     await contestant.save()
 
     if (email) {
-      const template = voteConfirmationTemplate({
-        eventTitle: metadata.event_title || event?.title || 'your event',
-        nominee: contestant.name,
-        quantity,
-      })
-      sendEmail({ to: email, subject: template.subject, text: template.text, html: template.html })
-        .catch(err => console.error('Vote email error:', err))
+      sendVoteConfirmationEmail({
+        to: email,
+        nomineeName: contestant.name,
+        voteCount: quantity,
+      }).catch(err => console.error('Vote email error:', err))
     }
 
     return sendSuccess(res, 'Vote recorded', {

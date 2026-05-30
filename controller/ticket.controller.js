@@ -5,26 +5,29 @@ import Event from '../model/event.model.js'
 import Award from '../model/award.model.js'
 import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
-import { sendEmail } from '../services/emailService.js'
-import { ticketEmailTemplate } from '../services/emailTemplates.js'
+import { sendTicketPurchaseEmail, sendVoteConfirmationEmail } from '../services/email.service.js'
 import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
 import { sendError, sendSuccess } from '../utils/response.js'
 
+const EVENT_TICKET_FIELDS = 'title startDate startTime endDate endTime location ticketPrice ticketPrices organizerId rsvps coHosts'
+const EVENT_PUBLIC_FIELDS = 'title startDate startTime endDate endTime location ticketPrice ticketPrices coverImage isPublic'
+const TICKET_PUBLIC_FIELDS = 'ticketId eventId attendeeName attendeeEmail ticketType price status paymentReference checkedInAt createdAt amountPaid paymentStatus'
+
 /* ── send ticket email with QR ── */
-async function sendTicketEmail(ticket, event) {
-  const ticketUrl = buildTicketUrl(ticket.ticketId)
-  const qrDataUrl = await QRCode.toDataURL(ticketUrl, {
+async function sendTicketEmail(ticket, event, qrAssets = null) {
+  const ticketUrl = qrAssets?.ticketUrl || buildTicketUrl(ticket.ticketId)
+  const qrDataUrl = qrAssets?.qrDataUrl || await QRCode.toDataURL(ticketUrl, {
     width: 400,
     margin: 2,
     color: { dark: '#0a0a0a', light: '#ffffff' },
   })
 
-  const template = ticketEmailTemplate({ event, ticket, ticketUrl, qrDataUrl })
-  await sendEmail({
+  await sendTicketPurchaseEmail({
     to: ticket.attendeeEmail,
-    subject: template.subject,
-    html: template.html,
-    text: template.text,
+    event,
+    ticket,
+    ticketUrl,
+    qrDataUrl,
   })
 }
 
@@ -54,7 +57,7 @@ function syncRsvpFromTicket(event, ticket) {
 export async function getTicketQr(req, res) {
   try {
     const { ticketId } = req.params
-    const ticket = await Ticket.findOne({ ticketId })
+    const ticket = await Ticket.findOne({ ticketId }).select('ticketId').lean()
     if (!ticket) return sendError(res, 404, 'Ticket not found')
 
     const ticketUrl = buildTicketUrl(ticket.ticketId)
@@ -117,7 +120,7 @@ async function initializeTicketPayment({ email, name, ticket, event, ticketType,
     email,
     amount: totalAmountInKobo,
     currency: 'NGN',
-    callbackUrl: `${appUrl}/tickets/${ticket.ticketId}?reference={PAYSTACK_REFERENCE}`,
+    callbackUrl: `${appUrl}/payment-success?type=ticket&ticketId=${ticket.ticketId}&eventId=${event._id}&reference={PAYSTACK_REFERENCE}`,
     metadata,
     channels: ['card', 'bank_transfer', 'ussd', 'bank'],
   })
@@ -146,7 +149,7 @@ export async function registerForEvent(req, res) {
 
     if (!email) return sendError(res, 400, 'Email is required')
 
-    const event = await Event.findById(eventId)
+    const event = await Event.findById(eventId).select(EVENT_TICKET_FIELDS)
     if (!event) return sendError(res, 404, 'Event not found')
 
     if (!name) return sendError(res, 400, 'Could not derive a name from the email provided')
@@ -159,9 +162,8 @@ export async function registerForEvent(req, res) {
     const existing = await Ticket.findOne({ eventId, attendeeEmail: email })
     if (existing) {
       if (existing.status === 'confirmed' || existing.status === 'checked-in') {
-        const eventForRsvp = await Event.findById(eventId)
-        if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, existing)) {
-          await eventForRsvp.save()
+        if (syncRsvpFromTicket(event, existing)) {
+          await event.save()
         }
         return sendSuccess(res, 'A ticket for this email already exists', {
           ticket: toClientTicket(existing), paymentRequired: false, redirect: null,
@@ -173,9 +175,8 @@ export async function registerForEvent(req, res) {
           existing.status = 'confirmed'
           existing.attendeeName = existing.attendeeName || name
           await existing.save()
-          const eventForRsvp = await Event.findById(eventId)
-          if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, existing)) {
-            await eventForRsvp.save()
+          if (syncRsvpFromTicket(event, existing)) {
+            await event.save()
           }
           sendTicketEmail(existing, event).catch(console.error)
           return sendSuccess(res, 'Your ticket has been confirmed.', {
@@ -199,9 +200,8 @@ export async function registerForEvent(req, res) {
         eventId, attendeeName: name, attendeeEmail: email,
         ticketType, price: 0, status: 'confirmed',
       })
-      const eventForRsvp = await Event.findById(eventId)
-      if (eventForRsvp && syncRsvpFromTicket(eventForRsvp, ticket)) {
-        await eventForRsvp.save()
+      if (syncRsvpFromTicket(event, ticket)) {
+        await event.save()
       }
       sendTicketEmail(ticket, event).catch(console.error)
       return sendSuccess(res, 'Registered! Check your email for your ticket.', {
@@ -284,7 +284,7 @@ export async function verifyPaystackPayment(req, res) {
     ticket.paystackPayload      = payload.data
     await ticket.save()
 
-    const event = await Event.findById(ticket.eventId)
+    const event = await Event.findById(ticket.eventId).select(EVENT_TICKET_FIELDS)
     if (event) {
       if (syncRsvpFromTicket(event, ticket)) {
         await event.save()
@@ -307,9 +307,9 @@ export async function verifyPaystackPayment(req, res) {
 ───────────────────────────────────────────────── */
 export async function getTicket(req, res) {
   try {
-    const ticket = await Ticket.findOne({ ticketId: req.params.ticketId })
+    const ticket = await Ticket.findOne({ ticketId: req.params.ticketId }).select(TICKET_PUBLIC_FIELDS).lean()
     if (!ticket) return sendError(res, 404, 'Ticket not found')
-    const event = await Event.findById(ticket.eventId)
+    const event = await Event.findById(ticket.eventId).select(EVENT_PUBLIC_FIELDS).lean()
     return sendSuccess(res, 'Ticket loaded', { ticket: toClientTicket(ticket), event })
   } catch (err) {
     return sendError(res, 500, 'Failed to load ticket')
@@ -327,7 +327,10 @@ export async function verifyTicket(req, res) {
 
     if (!ticket) return sendError(res, 404, 'Ticket not found', { valid: false })
 
-    const event = await findAccessibleEvent(ticket.eventId, req.user)
+    const event = await findAccessibleEvent(ticket.eventId, req.user, {
+      lean: true,
+      select: 'title startDate startTime organizerId coHosts',
+    })
     if (!event)  return sendError(res, 403, 'Not your event', { valid: false })
 
     if (ticket.status === 'pending')     return sendError(res, 400, 'Payment not completed', { valid: false })
@@ -348,14 +351,59 @@ export async function verifyTicket(req, res) {
 }
 
 /* ─────────────────────────────────────────────────
+   POST /api/tickets/verify   (protected)
+   Body: { ticketReference }
+───────────────────────────────────────────────── */
+export async function verifyTicketByReference(req, res) {
+  try {
+    const ticketReference = String(req.body?.ticketReference || req.body?.ticketId || '').trim()
+    if (!ticketReference) {
+      return sendError(res, 400, 'ticketReference is required', { valid: false })
+    }
+
+    const ticket = await Ticket.findOne({
+      $or: [{ ticketReference }, { ticketId: ticketReference }],
+    })
+
+    if (!ticket) return sendError(res, 404, 'Ticket not found', { valid: false })
+
+    const event = await findAccessibleEvent(ticket.eventId, req.user, {
+      lean: true,
+      select: 'title startDate startTime organizerId coHosts',
+    })
+    if (!event) return sendError(res, 403, 'Not your event', { valid: false })
+
+    if (ticket.status === 'pending') return sendError(res, 400, 'Payment not completed', { valid: false })
+    if (ticket.status === 'checked-in') {
+      return sendError(res, 409, 'Ticket already used', { valid: false, checkedInAt: ticket.checkedInAt })
+    }
+
+    ticket.status = 'checked-in'
+    ticket.checkedInAt = new Date()
+    await ticket.save()
+
+    return sendSuccess(res, 'Check-in successful', {
+      valid: true,
+      ticket: toClientTicket(ticket),
+      event: { title: event.title, startDate: event.startDate, startTime: event.startTime },
+    })
+  } catch (err) {
+    return sendError(res, 500, 'Verification failed', { valid: false })
+  }
+}
+
+/* ─────────────────────────────────────────────────
    GET /api/events/:eventId/tickets   (protected)
 ───────────────────────────────────────────────── */
 export async function listEventTickets(req, res) {
   try {
     const { eventId } = req.params
-    const event = await findAccessibleEvent(eventId, req.user)
+    const event = await findAccessibleEvent(eventId, req.user, { lean: true })
     if (!event) return sendError(res, 404, 'Event not found')
-    const tickets = await Ticket.find({ eventId }).sort({ createdAt: -1 })
+    const tickets = await Ticket.find({ eventId })
+      .sort({ createdAt: -1 })
+      .select(TICKET_PUBLIC_FIELDS)
+      .lean()
     return sendSuccess(res, 'Tickets loaded', { tickets: tickets.map(toClientTicket) })
   } catch (err) {
     return sendError(res, 500, 'Failed to load tickets')
@@ -366,7 +414,7 @@ function getRequesterEmail(user) {
   return String(user?.email || '').trim().toLowerCase()
 }
 
-async function findAccessibleEvent(eventId, user) {
+async function findAccessibleEvent(eventId, user, { lean = false, select = EVENT_TICKET_FIELDS } = {}) {
   const email = getRequesterEmail(user)
   const query = {
     _id: eventId,
@@ -377,7 +425,11 @@ async function findAccessibleEvent(eventId, user) {
     query.$or.push({ 'coHosts.email': email })
   }
 
-  return Event.findOne(query)
+  let dbQuery = Event.findOne(query).select(select)
+  if (lean) {
+    dbQuery = dbQuery.lean()
+  }
+  return dbQuery
 }
 
 /* ══════════════════════════════════════
@@ -389,7 +441,20 @@ function toClientTicket(t) {
     attendeeName: t.attendeeName, attendeeEmail: t.attendeeEmail,
     ticketType: t.ticketType, price: t.price, status: t.status,
     paymentReference: t.paymentReference,
+    paymentStatus: t.paymentStatus,
+    amountPaid: t.amountPaid,
     checkedInAt: t.checkedInAt, createdAt: t.createdAt,
+  }
+}
+
+function toClientEventSummary(event) {
+  if (!event) return null
+  return {
+    id: event._id,
+    title: event.title,
+    startDate: event.startDate,
+    startTime: event.startTime,
+    location: event.location,
   }
 }
 
@@ -423,6 +488,23 @@ function isFreeTicketPrice(priceValue) {
   if (!n || n === 'free') return true
   const num = Number(n.replace(/[^0-9.]/g, ''))
   return Number.isFinite(num) && num <= 0
+}
+
+async function ensureTicketQrAssets(ticket) {
+  const ticketUrl = buildTicketUrl(ticket.ticketId)
+  if (!ticket.qrCodeText) {
+    ticket.qrCodeText = ticketUrl
+  }
+
+  if (!ticket.qrCodeData) {
+    ticket.qrCodeData = await QRCode.toDataURL(ticketUrl, {
+      width: 400,
+      margin: 2,
+      color: { dark: '#0a0a0a', light: '#ffffff' },
+    })
+  }
+
+  return { ticketUrl, qrDataUrl: ticket.qrCodeData }
 }
 
 /* ─────────────────────────────────────────────────
@@ -468,13 +550,13 @@ export async function handlePaystackWebhook(req, res) {
 
     if (paymentType === 'ticket' || metadata.ticket_id) {
       const result = await processTicketWebhook({ data, metadata, req })
-      const responseData = isWebhook ? null : result
+      const responseData = isWebhook ? null : { type: 'ticket', ...result }
       return sendSuccess(res, 'Ticket payment verified', responseData)
     }
 
     if (paymentType === 'voting' || paymentType === 'vote' || metadata.contestant_id || metadata.award_id) {
       const result = await processVoteWebhook({ data, metadata })
-      const responseData = isWebhook ? null : result
+      const responseData = isWebhook ? null : { type: 'vote', ...result }
       return sendSuccess(res, 'Vote payment recorded', responseData)
     }
 
@@ -497,8 +579,12 @@ async function processTicketWebhook({ data, metadata, req }) {
   }
 
   if (ticket.status === 'confirmed' || ticket.status === 'checked-in') {
-    const event = await Event.findById(ticket.eventId)
-    return { ticket: toClientTicket(ticket), event }
+    const event = await Event.findById(ticket.eventId).select(EVENT_PUBLIC_FIELDS).lean()
+    return {
+      ticket: toClientTicket(ticket),
+      event: toClientEventSummary(event),
+      paymentReference: data.reference || ticket.paymentReference,
+    }
   }
 
   const paidAmount = Number(data.amount || 0)
@@ -518,7 +604,7 @@ async function processTicketWebhook({ data, metadata, req }) {
   const qrAssets = await ensureTicketQrAssets(ticket)
   await ticket.save()
 
-  const event = await Event.findById(ticket.eventId)
+  const event = await Event.findById(ticket.eventId).select(EVENT_TICKET_FIELDS)
   if (event) {
     if (syncRsvpFromTicket(event, ticket)) {
       await event.save()
@@ -526,7 +612,7 @@ async function processTicketWebhook({ data, metadata, req }) {
     sendTicketEmail(ticket, event, qrAssets).catch(console.error)
   }
 
-  return { ticket: toClientTicket(ticket), event }
+  return { ticket: toClientTicket(ticket), event: event ? toClientEventSummary(event) : null, paymentReference: data.reference || ticket.paymentReference }
 }
 
 function normalizeVoterName(name, email) {
@@ -572,8 +658,21 @@ async function processVoteWebhook({ data, metadata }) {
   }
 
   const existingVote = await Vote.findOne({ paymentReference: reference })
+    .select('contestantId quantity amountPaid eventId awardId')
+    .lean()
   if (existingVote) {
-    return { voteId: existingVote._id }
+    const contestant = await Contestant.findById(existingVote.contestantId).select('name slug').lean()
+    return {
+      voteId: existingVote._id,
+      contestant: contestant
+        ? { id: contestant._id, name: contestant.name, slug: contestant.slug }
+        : null,
+      quantity: Number(existingVote.quantity || 0),
+      amount: Number(existingVote.amountPaid || 0),
+      paymentReference: reference,
+      eventId: String(existingVote.eventId || ''),
+      awardId: String(existingVote.awardId || ''),
+    }
   }
 
   const award = await Award.findOne({ _id: awardId, eventId })
@@ -611,6 +710,7 @@ async function processVoteWebhook({ data, metadata }) {
     eventId,
     awardId,
     contestantId: contestant._id,
+    nomineeId: contestant._id,
     voterName: name,
     voterEmail: email,
     quantity,
@@ -643,6 +743,12 @@ async function processVoteWebhook({ data, metadata }) {
     }
   )
 
+  sendVoteConfirmationEmail({
+    to: email,
+    nomineeName: contestant.name,
+    voteCount: quantity,
+  }).catch(err => console.error('Vote email error:', err))
+
   return {
     voteId: vote._id,
     contestant: {
@@ -652,5 +758,8 @@ async function processVoteWebhook({ data, metadata }) {
     },
     quantity,
     amount: paidAmount,
+    paymentReference: reference,
+    eventId,
+    awardId,
   }
 }

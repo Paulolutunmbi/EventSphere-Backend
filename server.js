@@ -8,6 +8,7 @@ import ticketRoutes from './routes/Ticket.route.js'
 import awardRoutes from './routes/Award.route.js'
 import nomineeRoutes from './routes/Nominee.route.js'
 import paystackRoutes from './routes/Paystack.route.js'
+import systemRoutes from './routes/System.route.js'
 
 const app = express()
 
@@ -73,6 +74,7 @@ app.use('/api/tickets', ticketRoutes)
 app.use('/api/awards', awardRoutes)
 app.use('/api/nominees', nomineeRoutes)
 app.use('/api/payments', paystackRoutes)
+app.use('/api/system', systemRoutes)
 
 /*
 Expected Paystack URLs (Render example base):

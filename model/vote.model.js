@@ -20,6 +20,11 @@ const voteSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    nomineeId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Contestant',
+      index: true,
+    },
     voterName: {
       type: String,
       required: true,
@@ -30,6 +35,7 @@ const voteSchema = new mongoose.Schema(
       required: true,
       trim: true,
       lowercase: true,
+      index: true,
     },
     quantity: {
       type: Number,
@@ -46,6 +52,7 @@ const voteSchema = new mongoose.Schema(
       required: true,
       trim: true,
       unique: true,
+      index: true,
     },
     transactionReference: {
       type: String,
@@ -71,5 +78,8 @@ const voteSchema = new mongoose.Schema(
 )
 
 voteSchema.index({ eventId: 1, awardId: 1, contestantId: 1 })
+voteSchema.index({ nomineeId: 1 })
+voteSchema.index({ voterEmail: 1 })
+voteSchema.index({ paymentReference: 1 })
 
 export default mongoose.model('Vote', voteSchema)
