@@ -2,6 +2,7 @@ import Award from '../model/award.model.js'
 import Event from '../model/event.model.js'
 import Contestant from '../model/contestant.model.js'
 import Vote from '../model/vote.model.js'
+import mongoose from 'mongoose'
 import { initializePaystackPayment, verifyPaystackPayment as verifyPaystackTransaction } from '../services/paystackService.js'
 import { sendEmail } from '../services/emailService.js'
 import { voteConfirmationTemplate } from '../services/emailTemplates.js'
@@ -51,6 +52,27 @@ function getContestantStatsForAward(contestantsByAwardId, awardId) {
   const voterCount = contestants.reduce((total, contestant) => total + Number(contestant.voterCount || 0), 0)
 
   return { contestants, voteCount, voterCount }
+}
+
+function buildVoteStats(voteRows = []) {
+  const voteCountByAwardId = new Map()
+  const voteCountByContestantId = new Map()
+
+  for (const row of voteRows) {
+    const awardId = String(row._id?.awardId || '')
+    const contestantId = String(row._id?.contestantId || '')
+    const voteCount = Number(row.voteCount || 0)
+
+    if (awardId) {
+      voteCountByAwardId.set(awardId, (voteCountByAwardId.get(awardId) || 0) + voteCount)
+    }
+
+    if (contestantId) {
+      voteCountByContestantId.set(contestantId, (voteCountByContestantId.get(contestantId) || 0) + voteCount)
+    }
+  }
+
+  return { voteCountByAwardId, voteCountByContestantId }
 }
 
 function normalizeNominees(input, { createdByAdminId } = {}) {
@@ -220,8 +242,10 @@ function toPublicAward(award) {
   }
 }
 
-function toPublicAwardFromContestants(award, contestantsByAwardId) {
-  const { contestants, voteCount, voterCount } = getContestantStatsForAward(contestantsByAwardId, award._id)
+function toPublicAwardFromStats(award, contestantsByAwardId, voteCountByAwardId, voteCountByContestantId) {
+  const { contestants, voteCount: contestantVoteCount, voterCount } = getContestantStatsForAward(contestantsByAwardId, award._id)
+  const awardVoteCount = Number(voteCountByAwardId.get(String(award._id)) || 0)
+  const totalVotes = Math.max(awardVoteCount, contestantVoteCount)
 
   return {
     id: award._id,
@@ -230,20 +254,23 @@ function toPublicAwardFromContestants(award, contestantsByAwardId) {
     nominees: Array.isArray(award.nominees)
       ? award.nominees.map(nominee => {
           const nomineeName = typeof nominee === 'string' ? nominee : nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || ''
-          const matchingContestant = contestants.find(contestant => String(contestant.slug || '').toLowerCase() === slugify(nomineeName))
+          const nomineeSlug = slugify(nomineeName)
+          const matchingContestant = contestants.find(contestant => String(contestant.slug || '').toLowerCase() === nomineeSlug)
+          const contestantVoteCount = Number(matchingContestant?.voteCount || 0)
+          const voteCountFromVotes = Number(voteCountByContestantId.get(String(matchingContestant?._id || '')) || 0)
 
           return {
             name: nomineeName,
             imageUrl: typeof nominee === 'object' ? (nominee.imageUrl || nominee.image || nominee.photo || nominee.picture || nominee.avatar || '') : '',
-            slug: typeof nominee === 'object' ? (nominee.slug || slugify(nominee?.name || nominee?.title || nominee?.label || nominee?.nominee || nominee || '')) : slugify(nominee),
-            voteCount: Number(matchingContestant?.voteCount || 0),
+            slug: typeof nominee === 'object' ? (nominee.slug || nomineeSlug) : nomineeSlug,
+            voteCount: Math.max(contestantVoteCount, voteCountFromVotes),
             voterCount: Number(matchingContestant?.voterCount || 0),
           }
         })
       : [],
-    voteCount,
-    votesCount: voteCount,
-    totalVotes: voteCount,
+    voteCount: totalVotes,
+    votesCount: totalVotes,
+    totalVotes,
     voterCount,
     createdAt: award.createdAt,
   }
@@ -376,9 +403,13 @@ export async function initializeVotePayment(req, res) {
 export async function listAwards(req, res) {
   try {
     const { eventId } = req.params
-    const [awards, contestants] = await Promise.all([
+    const [awards, contestants, voteRows] = await Promise.all([
       Award.find({ eventId }).sort({ createdAt: -1 }).select('title description nominees createdAt'),
       Contestant.find({ eventId, isActive: true }).select('awardId slug voteCount voterCount').lean(),
+      Vote.aggregate([
+        { $match: { eventId: new mongoose.Types.ObjectId(String(eventId)) } },
+        { $group: { _id: { awardId: '$awardId', contestantId: '$contestantId' }, voteCount: { $sum: '$quantity' } } },
+      ]),
     ])
 
     const contestantsByAwardId = contestants.reduce((map, contestant) => {
@@ -389,8 +420,10 @@ export async function listAwards(req, res) {
       return map
     }, new Map())
 
+    const { voteCountByAwardId, voteCountByContestantId } = buildVoteStats(voteRows)
+
     return sendSuccess(res, 'Awards loaded', {
-      awards: awards.map(award => toPublicAwardFromContestants(award, contestantsByAwardId)),
+      awards: awards.map(award => toPublicAwardFromStats(award, contestantsByAwardId, voteCountByAwardId, voteCountByContestantId)),
     })
   } catch (error) {
     console.error('List awards error:', error)
@@ -406,7 +439,29 @@ export async function listContestants(req, res) {
 
     await syncContestantsForAward(award, eventId)
 
-    const contestants = await Contestant.find({ eventId, awardId, isActive: true }).sort({ createdAt: 1 })
+    const [contestants, voteRows] = await Promise.all([
+      Contestant.find({ eventId, awardId, isActive: true }).sort({ createdAt: 1 }),
+      Vote.aggregate([
+        {
+          $match: {
+            eventId: new mongoose.Types.ObjectId(String(eventId)),
+            awardId: new mongoose.Types.ObjectId(String(awardId)),
+          },
+        },
+        { $group: { _id: '$contestantId', voteCount: { $sum: '$quantity' } } },
+      ]),
+    ])
+
+    const voteCountByContestantId = new Map(voteRows.map(row => [String(row._id), Number(row.voteCount || 0)]))
+    const voteCountByNominee = new Map(
+      (Array.isArray(award.votes) ? award.votes : []).reduce((map, vote) => {
+        const nominee = String(vote.nominee || '').trim().toLowerCase()
+        if (nominee) {
+          map.set(nominee, (map.get(nominee) || 0) + Math.max(1, Number(vote.quantity || 1)))
+        }
+        return map
+      }, new Map())
+    )
     const awardNominees = Array.isArray(award.nominees) ? award.nominees : []
     const nomineeMap = new Map(
       awardNominees.map(nominee => {
@@ -424,7 +479,11 @@ export async function listContestants(req, res) {
         name: contestant.name,
         slug: contestant.slug,
         imageUrl: nomineeMap.get(contestant.slug)?.imageUrl || '',
-        voteCount: contestant.voteCount,
+        voteCount: Math.max(
+          Number(contestant.voteCount || 0),
+          Number(voteCountByContestantId.get(String(contestant._id)) || 0),
+          Number(voteCountByNominee.get(String(contestant.name || '').trim().toLowerCase()) || 0)
+        ),
         voterCount: contestant.voterCount,
       })),
     })
