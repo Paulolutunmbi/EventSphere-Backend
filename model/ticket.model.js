@@ -36,6 +36,7 @@ const ticketSchema = new mongoose.Schema(
       type:    Number,
       default: 0,
     },
+    
     // 'pending' → waiting for payment verification
     // 'confirmed' → ready to use
     // 'checked-in' → scanned at the door

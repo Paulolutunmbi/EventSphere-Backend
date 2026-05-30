@@ -205,6 +205,8 @@ function toPublicAward(award) {
         }))
       : [],
     voteCount:   getVoteCount(award),
+    votesCount:  getVoteCount(award),
+    totalVotes:  getVoteCount(award),
     voterCount:  getVoterCount(award),
     createdAt:   award.createdAt,
   }
@@ -224,6 +226,8 @@ function toAdminAward(award) {
         }))
       : [],
     voteCount:  getVoteCount(award),
+    votesCount: getVoteCount(award),
+    totalVotes: getVoteCount(award),
     voterCount: getVoterCount(award),
     votes: Array.isArray(award.votes)
       ? award.votes.map(vote => ({

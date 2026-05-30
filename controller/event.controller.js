@@ -388,10 +388,15 @@ export async function getEventAdminStats(req, res) {
       Contestant.find({ eventId }).sort({ createdAt: -1 }),
     ])
 
-    const paidTickets = tickets.filter(ticket => ticket.status === 'confirmed' && Number(ticket.price || 0) > 0)
-    const freeTickets = tickets.filter(ticket => ticket.status === 'confirmed' && Number(ticket.price || 0) <= 0)
+    const issuedTickets = tickets.filter(ticket => ticket.status === 'confirmed' || ticket.status === 'checked-in')
+    const paidTickets = issuedTickets.filter(ticket => Number(ticket.amountPaid ?? ticket.price ?? 0) > 0)
+    const freeTickets = issuedTickets.filter(ticket => Number(ticket.amountPaid ?? ticket.price ?? 0) <= 0)
     const scannedTickets = tickets.filter(ticket => ticket.status === 'checked-in')
     const unscannedTickets = tickets.filter(ticket => ticket.status === 'confirmed')
+    const totalVotes = awards.reduce((total, award) => total + getVoteCount(award), 0)
+    const paidTicketCount = paidTickets.length
+    const totalTicketCount = tickets.length
+    const issuedTicketCount = issuedTickets.length
 
     return sendSuccess(res, 'Admin stats loaded', {
       event: toClientEventWithHost(event, await getHostProfile(event.organizerId)),
@@ -414,10 +419,21 @@ export async function getEventAdminStats(req, res) {
         price: ticket.price,
         createdAt: ticket.createdAt,
       })),
-      paidCount: paidTickets.length,
+      paidCount: paidTicketCount,
+      paidTicketCount,
+      paidTicketsCount: paidTicketCount,
+      totalPaidTickets: paidTicketCount,
       freeCount: freeTickets.length,
+      totalTickets: totalTicketCount,
+      ticketCount: totalTicketCount,
+      totalTicketCount,
+      issuedTickets: issuedTicketCount,
+      issuedTicketCount,
       scannedCount: scannedTickets.length,
       unscannedCount: unscannedTickets.length,
+      voteCount: totalVotes,
+      votesCount: totalVotes,
+      totalVotes,
       scannedTickets: scannedTickets.map(ticket => ({
         id: ticket._id,
         ticketId: ticket.ticketId,
@@ -458,6 +474,8 @@ export async function getEventAdminStats(req, res) {
             }))
           : [],
         voteCount: getVoteCount(award),
+        votesCount: getVoteCount(award),
+        totalVotes: getVoteCount(award),
         votes: Array.isArray(award.votes) ? award.votes.map(vote => ({
           name: vote.name,
           email: vote.email,
