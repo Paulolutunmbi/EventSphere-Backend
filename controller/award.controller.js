@@ -281,6 +281,7 @@ export async function initializeVotePayment(req, res) {
 
     const metadata = {
       platform: 'eventsnest',
+      type: 'voting',
       payment_type: 'vote',
       nominee: selectedContestant.name,
       contestant_id: String(selectedContestant._id),

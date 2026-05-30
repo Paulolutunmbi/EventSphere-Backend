@@ -7,6 +7,7 @@ import eventRoutes from './routes/Event.route.js'
 import ticketRoutes from './routes/Ticket.route.js'
 import awardRoutes from './routes/Award.route.js'
 import nomineeRoutes from './routes/Nominee.route.js'
+import paystackRoutes from './routes/Paystack.route.js'
 
 const app = express()
 
@@ -55,7 +56,12 @@ app.use(cors({
 }))
 
 
-app.use(express.json({ limit: '10mb' }))
+app.use(express.json({
+  limit: '10mb',
+  verify(req, res, buf) {
+    req.rawBody = buf
+  },
+}))
 
 // health check — hit this first in Thunder Client to confirm server is up
 app.get('/', (req, res) => res.json({ success: true, message: 'EventsNest API is running ✅', data: null }))
@@ -66,6 +72,14 @@ app.use('/api/events', eventRoutes)
 app.use('/api/tickets', ticketRoutes)
 app.use('/api/awards', awardRoutes)
 app.use('/api/nominees', nomineeRoutes)
+app.use('/api/payments', paystackRoutes)
+
+/*
+Expected Paystack URLs (Render example base):
+- Live Webhook URL: https://eventsphere-backend-swqw.onrender.com/api/payments/paystack/webhook
+- Live Callback URL (votes): https://your-frontend-host/events/:eventId/vote?awardId=:awardId&reference={PAYSTACK_REFERENCE}
+- Live Callback URL (tickets): https://your-frontend-host/tickets/:ticketId?reference={PAYSTACK_REFERENCE}
+*/
 
 // fallback — shows all registered routes if a path isn't found
 app.use((req, res) => {
